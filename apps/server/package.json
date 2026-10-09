@@ -4,20 +4,28 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "build": "tsc",
-    "start": "node --env-file-if-exists=.env dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.128",
     "@hono/node-server": "^2.1.4",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
     "ai": "^6.0.302",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
+    "protocol": "*",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^3.0.18",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.4",
+    "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   }
 }

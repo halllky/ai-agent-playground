@@ -1,35 +1,21 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
-import { anthropic } from '@ai-sdk/anthropic';
-import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from 'ai';
-import { z } from 'zod';
+import { graphRoutes } from './routes/graphs.ts';
+import { sessionRoutes } from './routes/sessions.ts';
+import { turnRoutes } from './routes/turns.ts';
+import { modelCatalog } from './openrouter/index.ts';
+import { closeInterruptedTurns } from './run/index.ts';
 
-const app = new Hono().basePath('/api');
+closeInterruptedTurns();
 
-app.use(logger());
-
-app.get('/health', (c) => c.json({ ok: true }));
-
-app.post('/chat', async (c) => {
-  const { messages } = await c.req.json<{ messages: UIMessage[] }>();
-
-  const result = streamText({
-    model: anthropic('claude-sonnet-5-5'),
-    system: 'You are a helpful assistant running inside an AI agent playground.',
-    messages: await convertToModelMessages(messages),
-    tools: {
-      getCurrentTime: tool({
-        description: 'Get the current date and time on the server',
-        inputSchema: z.object({}),
-        execute: async () => ({ now: new Date().toISOString() }),
-      }),
-    },
-    stopWhen: stepCountIs(5),
-  });
-
-  return result.toUIMessageStreamResponse();
-});
+const app = new Hono()
+  .basePath('/api')
+  .use(logger())
+  .route('/graphs', graphRoutes)
+  .route('/sessions', sessionRoutes)
+  .route('/turns', turnRoutes)
+  .get('/models', async (c) => c.json(await modelCatalog()));
 
 const port = Number(process.env.PORT ?? 8787);
 
