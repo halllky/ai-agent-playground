@@ -1,7 +1,16 @@
 {
 	"folders": [
 		{
+			"name": "ワークスペース全体",
 			"path": "."
+		},
+		{
+			"name": "server",
+			"path": "./apps/server"
+		},
+		{
+			"name": "web",
+			"path": "./apps/web"
 		}
 	],
 	"settings": {},
