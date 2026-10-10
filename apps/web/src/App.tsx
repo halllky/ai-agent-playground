@@ -11,9 +11,9 @@ import { TopBar } from './session/TopBar.tsx';
 export function App() {
   useGraphSaveShortcuts();
   return (
-    <div className="app">
+    <div className="flex h-full flex-col">
       <TopBar />
-      <div className="workspace">
+      <div className="min-h-0 flex-1">
         <Allotment vertical defaultSizes={[70, 30]}>
           <Allotment.Pane minSize={200}>
             <Allotment defaultSizes={[40, 40, 20]}>

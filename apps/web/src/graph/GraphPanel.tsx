@@ -27,7 +27,8 @@ import {
   type TurnRecord,
 } from 'protocol';
 import { createGraph, showTurnGraph, updateGraphDefinition, useSession } from '../session/store.ts';
-import { NumberField } from './fields.tsx';
+import { EmptyNote } from '../ui/primitives.tsx';
+import { Hint, NumberField } from './fields.tsx';
 import { edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
 
 /**
@@ -41,13 +42,13 @@ export function GraphPanel() {
   const [selection, setSelection] = useState<Selection>(null);
   const definition = viewingTurn?.graph ?? graph?.definition;
   const warnings = useMemo(() => (definition ? diagnoseGraph(definition, models) : []), [definition, models]);
-  if (!definition) return <div className="panel-empty">グラフがありません</div>;
+  if (!definition) return <EmptyNote>グラフがありません</EmptyNote>;
 
   const readOnly = viewingTurn !== undefined;
   return (
-    <div className="graph-panel">
+    <div className="flex h-full flex-col">
       {viewingTurn && <TurnGraphBanner turn={viewingTurn} />}
-      <div className="graph-panel-body">
+      <div className="min-h-0 flex-1">
         <Allotment vertical defaultSizes={[65, 35]}>
           <Allotment.Pane minSize={120}>
             {/* 表示するグラフを切り替えたときに表示範囲を合わせ直すため、グラフごとに作り直す */}
@@ -72,8 +73,8 @@ function TurnGraphBanner({ turn }: { turn: TurnRecord }) {
     void createGraph(name, turn.graph);
   };
   return (
-    <div className="graph-banner">
-      <span className="graph-banner-text" title={turn.userText}>
+    <div className="flex items-center gap-1.5 border-b bg-highlight px-2 py-1">
+      <span className="min-w-0 flex-1 truncate" title={turn.userText}>
         「{turn.userText}」の実行時のグラフ（読み取り専用）
       </span>
       <button onClick={duplicate}>複製して編集</button>
@@ -119,7 +120,8 @@ function Canvas(props: {
       label: edgeKindView(edge).label(edge) || undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
-      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? 'edge-warning' : undefined,
+      // React Flow が選択中などに付ける線の色より、警告の色を優先する
+      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? '[&_path]:stroke-warn!' : undefined,
     }),
   );
 
@@ -131,9 +133,9 @@ function Canvas(props: {
   };
 
   return (
-    <div className="graph-canvas">
+    <div className="relative h-full">
       {!readOnly && (
-        <div className="palette">
+        <div className="absolute top-2 left-2 z-5 flex gap-1.5">
           {(Object.keys(nodeKindViews) as NodeKind[])
             .filter((kind) => nodeKindViews[kind].addable(definition))
             .map((kind) => (
@@ -210,16 +212,20 @@ function selectionAfter(id: string, selected: boolean, toSelection: (id: string)
   };
 }
 
-function GraphNodeView({ data }: NodeProps<FlowNode>) {
+function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
   const view = nodeKindView(data.node);
   return (
-    <div className={`graph-node kind-${data.node.kind}`}>
+    <div
+      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${data.node.kind === 'mainAgent' ? 'border-2' : 'border'} ${
+        selected ? 'border-accent ring-1 ring-accent' : ''
+      }`}
+    >
       {view.acceptsIncoming && <Handle type="target" position={Position.Top} />}
-      <div className="graph-node-kind">{view.label}</div>
-      <div className="graph-node-title">{view.title(data.node)}</div>
-      <div className="graph-node-summary">{view.summary(data.node)}</div>
+      <div className="text-2xs text-muted">{view.label}</div>
+      <div className="font-semibold">{view.title(data.node)}</div>
+      <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>
       {data.warnings.length > 0 && (
-        <div className="graph-node-warning" title={data.warnings.join('\n')}>
+        <div className="mt-1 text-xs text-warn" title={data.warnings.join('\n')}>
           ⚠ {data.warnings.length}
         </div>
       )}
@@ -243,7 +249,7 @@ function Inspector(props: {
   if (node) {
     const view = nodeKindView(node);
     return (
-      <fieldset className="inspector" disabled={readOnly}>
+      <fieldset className={inspector} disabled={readOnly}>
         <InspectorHeader
           title={view.label}
           onDelete={() => {
@@ -262,7 +268,7 @@ function Inspector(props: {
   if (edge) {
     const view = edgeKindView(edge);
     return (
-      <fieldset className="inspector" disabled={readOnly}>
+      <fieldset className={inspector} disabled={readOnly}>
         <InspectorHeader
           title="エッジ"
           onDelete={() => {
@@ -280,8 +286,8 @@ function Inspector(props: {
     );
   }
   return (
-    <fieldset className="inspector" disabled={readOnly}>
-      <h3>グラフ設定</h3>
+    <fieldset className={inspector} disabled={readOnly}>
+      <h3 className="mb-2 font-bold">グラフ設定</h3>
       <WarningList messages={warningsFor(warnings, { graph: true })} />
       <NumberField
         label="呼び出しネストの上限"
@@ -289,16 +295,18 @@ function Inspector(props: {
         value={definition.settings.maxCallDepth}
         onChange={(maxCallDepth) => updateGraphDefinition((d) => ({ ...d, settings: { ...d.settings, maxCallDepth } }))}
       />
-      <p className="hint">ノードやエッジを選ぶと設定の編集や削除ができます。選んで Delete / Backspace キーでも削除できます。</p>
+      <Hint>ノードやエッジを選ぶと設定の編集や削除ができます。選んで Delete / Backspace キーでも削除できます。</Hint>
     </fieldset>
   );
 }
 
+const inspector = 'h-full min-w-0 overflow-y-auto border-t px-3 py-2';
+
 function InspectorHeader({ title, onDelete }: { title: string; onDelete: () => void }) {
   return (
-    <div className="inspector-header">
-      <h3>{title}</h3>
-      <button className="danger" onClick={onDelete}>
+    <div className="mb-2 flex items-center justify-between">
+      <h3 className="font-bold">{title}</h3>
+      <button className="border-danger text-danger" onClick={onDelete}>
         削除
       </button>
     </div>
@@ -308,7 +316,7 @@ function InspectorHeader({ title, onDelete }: { title: string; onDelete: () => v
 function WarningList({ messages }: { messages: string[] }) {
   if (messages.length === 0) return null;
   return (
-    <ul className="warnings">
+    <ul className="mb-2 text-warn">
       {messages.map((m) => (
         <li key={m}>⚠ {m}</li>
       ))}

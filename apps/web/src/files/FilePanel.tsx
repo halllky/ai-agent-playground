@@ -4,6 +4,7 @@ import { resourceSpecOf, workfolderSpec, type FileEntry, type GraphDefinition } 
 import { api } from '../api.ts';
 import { Markdown } from '../markdown/Markdown.tsx';
 import { useSession } from '../session/store.ts';
+import { CodeBlock, EmptyNote, ErrorNote, Pending } from '../ui/primitives.tsx';
 
 /**
  * 表示中のターン時点のファイルの閲覧。ファイルはエージェントだけが書き込み、ここでは読み取り専用で表示する。
@@ -42,17 +43,17 @@ export function FilePanel() {
   const selectedEntry = selected && files.find((f) => f.volume === selected.volume && f.path === selected.path);
 
   return (
-    <div className="files">
-      <div className="panel-title">ファイル</div>
-      <div className="files-body">
+    <div className="flex h-full flex-col border-l">
+      <div className="border-b px-2.5 py-1.5 font-semibold">ファイル</div>
+      <div className="min-h-0 flex-1">
         <Allotment vertical defaultSizes={[40, 60]}>
           <Allotment.Pane minSize={60}>
-            <div className="file-tree">
-              {error && <div className="status-note error">{error}</div>}
-              {files.length === 0 && !error && <div className="panel-empty">まだファイルはありません</div>}
+            <div className={paneBody}>
+              {error && <ErrorNote>{error}</ErrorNote>}
+              {files.length === 0 && !error && <EmptyNote>まだファイルはありません</EmptyNote>}
               {groupByVolume(files).map(([volume, entries]) => (
-                <div key={volume} className="file-volume">
-                  <div className="file-volume-title">{volumeLabel(volume, activeGraph)}</div>
+                <div key={volume}>
+                  <div className="py-1 text-sm font-semibold text-muted">{volumeLabel(volume, activeGraph)}</div>
                   <TreeView nodes={treeOf(entries)} activeTurnId={activeTurnId} selected={selected} onSelect={setSelected} />
                 </div>
               ))}
@@ -62,7 +63,7 @@ export function FilePanel() {
             {selected && activeTurnId ? (
               <FileView turnId={activeTurnId} file={selected} entry={selectedEntry ?? undefined} />
             ) : (
-              <div className="panel-empty">ファイルを選ぶと中身を表示します</div>
+              <EmptyNote>ファイルを選ぶと中身を表示します</EmptyNote>
             )}
           </Allotment.Pane>
         </Allotment>
@@ -70,6 +71,8 @@ export function FilePanel() {
     </div>
   );
 }
+
+const paneBody = 'h-full overflow-auto px-1.5 py-1';
 
 type FileRef = { volume: string; path: string };
 
@@ -84,18 +87,20 @@ function TreeView(props: {
 }) {
   const { nodes, activeTurnId, selected, onSelect } = props;
   return (
-    <ul className="file-list">
+    <ul>
       {nodes.map((node) =>
         node.entry ? (
           <li key={`file:${node.name}`}>
             <button
               type="button"
-              className={`file-item${selected?.volume === node.entry.volume && selected.path === node.entry.path ? ' selected' : ''}`}
+              className={`flex w-full items-center gap-1 border-0 px-1 py-px text-left ${
+                selected?.volume === node.entry.volume && selected.path === node.entry.path ? 'bg-highlight' : 'bg-transparent hover:bg-surface-sub'
+              }`}
               onClick={() => onSelect({ volume: node.entry!.volume, path: node.entry!.path })}
             >
               {node.name}
               {node.entry.turnId === activeTurnId && (
-                <span className="file-changed" title="このターンで変更されたファイル">
+                <span className="text-3xs text-accent" title="このターンで変更されたファイル">
                   ●
                 </span>
               )}
@@ -105,7 +110,9 @@ function TreeView(props: {
           <li key={`folder:${node.name}`}>
             <details open>
               <summary>{node.name}/</summary>
-              <TreeView {...props} nodes={node.children} />
+              <div className="pl-3">
+                <TreeView {...props} nodes={node.children} />
+              </div>
             </details>
           </li>
         ),
@@ -137,18 +144,18 @@ function FileView({ turnId, file, entry }: { turnId: string; file: FileRef; entr
   }, [turnId, file.volume, file.path, entry?.turnId, entry?.at]);
 
   return (
-    <div className="file-view">
-      <div className="file-view-title">{file.path}</div>
+    <div className={`${paneBody} border-t`}>
+      <div className="mb-1 font-semibold break-all">{file.path}</div>
       {!entry ? (
-        <div className="panel-empty">このターンの時点では存在しません</div>
+        <EmptyNote>このターンの時点では存在しません</EmptyNote>
       ) : error ? (
-        <div className="status-note error">{error}</div>
+        <ErrorNote>{error}</ErrorNote>
       ) : content === null ? (
-        <span className="pending">…</span>
+        <Pending />
       ) : file.path.endsWith('.md') ? (
         <Markdown text={content} />
       ) : (
-        <pre className="json">{prettyJson(content)}</pre>
+        <CodeBlock text={prettyJson(content)} />
       )}
     </div>
   );

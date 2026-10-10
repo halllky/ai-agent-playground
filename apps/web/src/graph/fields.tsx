@@ -2,13 +2,14 @@ import { useId, type ReactNode } from 'react';
 import { judgeQuestionTypeLabels, judgeQuestionTypes, type JudgeQuestion, type ModelInfo, type ModelProvider } from 'protocol';
 import { useSession } from '../session/store.ts';
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      {children}
-    </label>
-  );
+/** インスペクタ内の小見出し */
+export function SectionHeading({ children }: { children: ReactNode }) {
+  return <h4 className="mt-3 mb-1 text-sm font-bold">{children}</h4>;
+}
+
+/** 設定項目の補足説明 */
+export function Hint({ children }: { children: ReactNode }) {
+  return <p className="my-3 text-muted">{children}</p>;
 }
 
 /** 1行または複数行のテキスト入力 */
@@ -77,8 +78,8 @@ export function ModelField(props: { provider: ModelProvider; value: string; onCh
           </option>
         ))}
       </datalist>
-      {model && <span className="field-note">{describeModel(model)}</span>}
-      {error && <span className="field-note">モデル一覧を取得できません: {error}</span>}
+      {model && <span className={fieldNote}>{describeModel(model)}</span>}
+      {error && <span className={fieldNote}>モデル一覧を取得できません: {error}</span>}
     </Field>
   );
 }
@@ -90,16 +91,16 @@ export function ResourceFilesField(props: { files: ResourceFile[]; onChange: (fi
   const { files, onChange } = props;
   const update = (index: number, file: Partial<ResourceFile>) => onChange(files.map((f, i) => (i === index ? { ...f, ...file } : f)));
   return (
-    <div className="resource-files">
+    <div className="mb-2 flex flex-col gap-2">
       {files.map((file, i) => (
-        <div key={i} className="resource-file">
-          <div className="resource-file-header">
-            <input value={file.path} placeholder="data.json" onChange={(e) => update(i, { path: e.target.value })} />
-            <button type="button" className="danger" onClick={() => onChange(files.filter((_, j) => j !== i))}>
+        <div key={i} className="flex flex-col gap-0.5">
+          <div className="flex gap-1">
+            <input className="min-w-0 flex-1" value={file.path} placeholder="data.json" onChange={(e) => update(i, { path: e.target.value })} />
+            <button type="button" className="border-danger text-danger" onClick={() => onChange(files.filter((_, j) => j !== i))}>
               削除
             </button>
           </div>
-          <textarea rows={6} spellCheck={false} value={file.content} onChange={(e) => update(i, { content: e.target.value })} />
+          <textarea className="font-mono text-sm" rows={6} spellCheck={false} value={file.content} onChange={(e) => update(i, { content: e.target.value })} />
         </div>
       ))}
       <button type="button" onClick={() => onChange([...files, { path: `data${files.length + 1}.json`, content: '{}' }])}>
@@ -114,11 +115,11 @@ export function JudgeQuestionsField(props: { questions: JudgeQuestion[]; onChang
   const { questions, onChange } = props;
   const replace = (index: number, question: JudgeQuestion) => onChange(questions.map((q, i) => (i === index ? question : q)));
   return (
-    <div className="judge-questions">
+    <div className="mb-2 flex flex-col gap-2.5">
       {questions.map((question, i) => (
-        <div key={i} className="judge-question">
-          <div className="judge-question-header">
-            <input value={question.key} placeholder="名前" onChange={(e) => replace(i, { ...question, key: e.target.value })} />
+        <div key={i} className="flex flex-col gap-1 rounded border p-1.5">
+          <div className="flex gap-1">
+            <input className="min-w-0 flex-1" value={question.key} placeholder="名前" onChange={(e) => replace(i, { ...question, key: e.target.value })} />
             <select value={question.type} onChange={(e) => replace(i, withType(question, e.target.value as JudgeQuestion['type']))}>
               {judgeQuestionTypes.map((type) => (
                 <option key={type} value={type}>
@@ -126,7 +127,7 @@ export function JudgeQuestionsField(props: { questions: JudgeQuestion[]; onChang
                 </option>
               ))}
             </select>
-            <button type="button" className="danger" onClick={() => onChange(questions.filter((_, j) => j !== i))}>
+            <button type="button" className="border-danger text-danger" onClick={() => onChange(questions.filter((_, j) => j !== i))}>
               削除
             </button>
           </div>
@@ -187,9 +188,9 @@ function ListEditor<T>(props: {
 }) {
   const { items, newItem, onChange, render } = props;
   return (
-    <div className="list-editor">
+    <div className="flex flex-col gap-1">
       {items.map((item, i) => (
-        <div key={i} className="list-editor-row">
+        <div key={i} className="flex gap-1 [&>input]:min-w-0 [&>input]:flex-1">
           {render(item, (changed) => onChange(items.map((x, j) => (j === i ? changed : x))), i)}
           <button type="button" onClick={() => onChange(items.filter((_, j) => j !== i))}>
             ×
@@ -202,6 +203,17 @@ function ListEditor<T>(props: {
     </div>
   );
 }
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="mb-2 flex flex-col gap-0.5">
+      <span className={fieldNote}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const fieldNote = 'text-xs text-muted';
 
 function withType(question: Pick<JudgeQuestion, 'key' | 'instructions'>, type: JudgeQuestion['type']): JudgeQuestion {
   const { key, instructions } = question;

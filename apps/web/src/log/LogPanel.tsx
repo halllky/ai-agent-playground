@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { RunEvent, RunEventType, TurnRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds.tsx';
 import { turnPath, useSession } from '../session/store.ts';
+import { CodeBlock } from '../ui/primitives.tsx';
 
 /** 表示中の分岐のターンについて、実行イベントと集計を表示する */
 export function LogPanel() {
@@ -12,12 +13,12 @@ export function LogPanel() {
   const [tab, setTab] = useState<'events' | 'stats'>('events');
 
   return (
-    <div className="log">
-      <div className="log-tabs">
-        <button className={tab === 'events' ? 'active' : ''} onClick={() => setTab('events')}>
+    <div className="flex h-full flex-col border-t">
+      <div className="flex gap-1 bg-surface-sub px-2 py-1">
+        <button className={tab === 'events' ? activeTab : ''} onClick={() => setTab('events')}>
           イベント
         </button>
-        <button className={tab === 'stats' ? 'active' : ''} onClick={() => setTab('stats')}>
+        <button className={tab === 'stats' ? activeTab : ''} onClick={() => setTab('stats')}>
           集計
         </button>
       </div>
@@ -25,6 +26,12 @@ export function LogPanel() {
     </div>
   );
 }
+
+const activeTab = 'border-accent text-accent';
+const body = 'flex-1 overflow-auto';
+const table = 'w-full border-collapse text-sm';
+/** 表の行に付けて、各セルを1行に詰めて区切り線を引く */
+const row = '*:border-b *:px-2 *:py-0.5 *:text-left *:align-top *:whitespace-nowrap';
 
 type EventsByTurn = Record<string, RunEvent[]>;
 
@@ -44,8 +51,8 @@ function EventList({ path, events }: { path: TurnRecord[]; events: EventsByTurn 
   const latestGraph = path.at(-1)?.graph;
 
   return (
-    <div className="log-body">
-      <div className="log-filters">
+    <div className={body}>
+      <div className="sticky top-0 flex flex-wrap items-center gap-2 border-b bg-surface px-2 py-1">
         <select value={turnId} onChange={(e) => setTurnId(e.target.value)}>
           <option value="">全ターン</option>
           {path.map((t, i) => (
@@ -63,7 +70,7 @@ function EventList({ path, events }: { path: TurnRecord[]; events: EventsByTurn 
           ))}
         </select>
         {eventTypes.map((type) => (
-          <label key={type} className="check">
+          <label key={type} className="flex items-center gap-0.5 text-sm">
             <input
               type="checkbox"
               checked={!hidden.has(type)}
@@ -78,18 +85,18 @@ function EventList({ path, events }: { path: TurnRecord[]; events: EventsByTurn 
           </label>
         ))}
       </div>
-      <table className="log-table">
+      <table className={table}>
         <tbody>
           {rows.map(({ turn, turnNumber, event }) => {
             const key = `${event.turnId}:${event.seq}`;
             const open = expanded === key;
             return (
-              <tr key={key} className={`log-row type-${event.type.replace('.', '-')}`} onClick={() => setExpanded(open ? null : key)}>
-                <td className="time">{new Date(event.at).toLocaleTimeString()}</td>
+              <tr key={key} className={`${row} cursor-pointer hover:bg-surface-sub`} onClick={() => setExpanded(open ? null : key)}>
+                <td className="text-muted">{new Date(event.at).toLocaleTimeString()}</td>
                 <td>T{turnNumber}</td>
                 <td>{event.nodeId ? nodeTitle(turn.graph, event.nodeId) : '-'}</td>
-                <td className="type">{event.type}</td>
-                <td className="summary">{open ? <pre className="json">{JSON.stringify(event, null, 2)}</pre> : summaryOf(event)}</td>
+                <td className={event.type === 'log' || event.type === 'turn.finish' ? 'text-warn' : ''}>{event.type}</td>
+                <td className="w-full max-w-0 overflow-hidden text-ellipsis">{open ? <CodeBlock text={JSON.stringify(event, null, 2)} /> : summaryOf(event)}</td>
               </tr>
             );
           })}
@@ -146,10 +153,10 @@ function Stats({ path, events }: { path: TurnRecord[]; events: EventsByTurn }) {
   });
 
   return (
-    <div className="log-body">
-      <table className="stats-table">
+    <div className={body}>
+      <table className={table}>
         <thead>
-          <tr>
+          <tr className={row}>
             <th>ターン</th>
             <th>ノード</th>
             <th>ステップ</th>
@@ -161,7 +168,7 @@ function Stats({ path, events }: { path: TurnRecord[]; events: EventsByTurn }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.key} className={r.isTotal ? 'total' : ''}>
+            <tr key={r.key} className={`${row} ${r.isTotal ? 'font-semibold' : ''}`}>
               <td>{r.turn}</td>
               <td>{r.node}</td>
               <td>{r.totals.steps}</td>

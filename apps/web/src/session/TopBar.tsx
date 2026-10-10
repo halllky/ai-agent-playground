@@ -10,8 +10,8 @@ export function TopBar() {
   const error = useSession((s) => s.error);
 
   return (
-    <header className="topbar">
-      <label>
+    <header className="flex items-center gap-2 border-b bg-surface-sub px-2.5 py-1.5">
+      <label className="flex items-center gap-1">
         セッション
         <select value={sessionId ?? ''} onChange={(e) => void openSession(e.target.value || null)}>
           <option value="">（新しい会話）</option>
@@ -24,7 +24,7 @@ export function TopBar() {
       </label>
       <button onClick={() => void createSession()}>新規セッション</button>
 
-      <label>
+      <label className="flex items-center gap-1">
         グラフ
         <select value={graph?.id ?? ''} onChange={(e) => void selectGraph(e.target.value)}>
           {graphs.map((g) => (
@@ -73,7 +73,7 @@ export function TopBar() {
       </button>
 
       {error && (
-        <div className="topbar-error" onClick={dismissError} title="クリックで閉じる">
+        <div className="ml-auto max-w-[50%] cursor-pointer truncate text-danger" onClick={dismissError} title="クリックで閉じる">
           {error}
         </div>
       )}

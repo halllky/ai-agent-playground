@@ -18,7 +18,7 @@ import {
   type NodeKind,
   type NodeOf,
 } from 'protocol';
-import { JudgeQuestionsField, ModelField, NumberField, ResourceFilesField, SelectField, TextField } from './fields.tsx';
+import { Hint, JudgeQuestionsField, ModelField, NumberField, ResourceFilesField, SectionHeading, SelectField, TextField } from './fields.tsx';
 
 /**
  * ノード種別ごとの画面上の振る舞い。
@@ -71,7 +71,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
           <TextField label="ツール名" value={node.config.name} onChange={(name) => set({ name })} />
           <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
           <AgentFields node={node} onChange={onChange} />
-          <h4>呼び出しの既定値</h4>
+          <SectionHeading>呼び出しの既定値</SectionHeading>
           <SelectField label="渡すもの" value={node.config.callDefaults.pass} options={passOptions} onChange={(pass) => setDefault({ pass })} />
           <SelectField label="返すもの" value={node.config.callDefaults.returns} options={returnOptions} onChange={(returns) => setDefault({ returns })} />
           <SelectField label="記憶" value={node.config.callDefaults.memory} options={memoryOptions} onChange={(memory) => setDefault({ memory })} />
@@ -87,10 +87,10 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     emitsOutgoing: false,
     addable: (graph) => !graph.nodes.some((n) => n.kind === 'workfolder'),
     Inspector: () => (
-      <p className="hint">
+      <Hint>
         この会話の作業用フォルダです。エージェントからエッジを張ると、ファイルの参照・編集のツールが使えるようになります。
         中身はターンごとに残り、過去のターンからやり直すとその時点の中身に戻ります。
-      </p>
+      </Hint>
     ),
   },
   resource: {
@@ -106,8 +106,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
         <>
           <TextField label="名前（ツール名の接頭辞）" value={node.config.name} onChange={(name) => set({ name })} />
           <TextField label="説明（エージェントに見える）" value={node.config.description} onChange={(description) => set({ description })} />
-          <h4>ファイル</h4>
-          <p className="hint">会話で初めて使うときにこの内容が写され、以降の編集はその会話の中だけに効きます。</p>
+          <SectionHeading>ファイル</SectionHeading>
+          <Hint>会話で初めて使うときにこの内容が写され、以降の編集はその会話の中だけに効きます。</Hint>
           <ResourceFilesField files={node.config.files} onChange={(files) => set({ files })} />
         </>
       );
@@ -145,8 +145,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
           <TextField label="ツール名" value={node.config.name} onChange={(name) => set({ name })} />
           <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
           <TextField label="モデル（空なら jev-latest）" value={node.config.model} onChange={(model) => set({ model })} />
-          <h4>質問</h4>
-          <p className="hint">呼び出し元は判定対象の state だけを渡し、ここで決めた質問への回答を確率付きで受け取ります。</p>
+          <SectionHeading>質問</SectionHeading>
+          <Hint>呼び出し元は判定対象の state だけを渡し、ここで決めた質問への回答を確率付きで受け取ります。</Hint>
           <JudgeQuestionsField questions={node.config.questions} onChange={(questions) => set({ questions })} />
         </>
       );
@@ -200,7 +200,7 @@ const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
   },
   use: {
     label: () => '',
-    Inspector: () => <p className="hint">接続先をツールとして使えるようにします。設定はありません。</p>,
+    Inspector: () => <Hint>接続先をツールとして使えるようにします。設定はありません。</Hint>,
   },
 };
 
