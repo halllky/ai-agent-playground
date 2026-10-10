@@ -1,12 +1,14 @@
 import { create } from 'zustand';
-import type { GraphDefinition, GraphRecord, ModelInfo, RunEvent, SessionRecord, TurnRecord } from 'protocol';
+import { modelProviders, type GraphDefinition, type GraphRecord, type ModelInfo, type ModelProvider, type RunEvent, type SessionRecord, type TurnRecord } from 'protocol';
 import { api } from '../api.ts';
 
 type State = {
   graphs: GraphRecord[];
   sessions: SessionRecord[];
-  /** 取得前・取得失敗時は undefined */
-  models: ModelInfo[] | undefined;
+  /** プロバイダごとのモデル一覧。取得前・取得失敗時は無い */
+  models: Partial<Record<ModelProvider, ModelInfo[]>>;
+  /** プロバイダごとの、モデル一覧を取得できなかった理由 */
+  modelErrors: Partial<Record<ModelProvider, string>>;
   /** 編集中のグラフ。セッションを開いているときはそのセッションが参照するグラフ */
   graphId: string | null;
   sessionId: string | null;
@@ -24,7 +26,8 @@ type State = {
 const initialState: State = {
   graphs: [],
   sessions: [],
-  models: undefined,
+  models: {},
+  modelErrors: {},
   graphId: null,
   sessionId: null,
   turns: [],
@@ -51,10 +54,13 @@ export async function initialize(): Promise<void> {
     useSession.setState({ graphs, sessions, graphId: graphs[0].id });
     if (sessions[0]) await openSession(sessions[0].id);
   });
-  api.models().then(
-    (models) => useSession.setState({ models }),
-    (e) => useSession.setState({ error: `モデル一覧を取得できません: ${messageOf(e)}` }),
-  );
+  // 使わないプロバイダのキーは未設定のことがあるので、取得失敗は画面全体のエラーにしない
+  for (const provider of modelProviders) {
+    api.models(provider).then(
+      (models) => useSession.setState((s) => ({ models: { ...s.models, [provider]: models } })),
+      (e) => useSession.setState((s) => ({ modelErrors: { ...s.modelErrors, [provider]: messageOf(e) } })),
+    );
+  }
 }
 
 /** セッションを開き、表示中の分岐のイベントを購読する。null ならセッションを開いていない状態にする */

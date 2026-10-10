@@ -16,7 +16,7 @@ import {
   workfolderSpec,
 } from 'protocol';
 import { judgeTool } from '../judge/index.ts';
-import { languageModel, modelCatalog } from '../openrouter/index.ts';
+import { languageModel, stepCost } from '../llm/index.ts';
 import { volumeTools } from '../volume/tools.ts';
 import { webSearchTool } from '../webSearch/index.ts';
 import { recallMemory, storeMemory, type TurnMemory } from './memory.ts';
@@ -73,7 +73,7 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
   let error: string | null = null;
 
   const result = streamText({
-    model: languageModel(req.node.config.model),
+    model: languageModel(req.node.config.provider, req.node.config.model),
     system: req.node.config.systemPrompt,
     messages: req.messages,
     tools: toolsFor(scope, req.node, header, req.depth),
@@ -82,7 +82,7 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
     onStepFinish: async (step) => {
       steps.push(step);
       partialText = '';
-      emit({ type: 'step.finish', step: await stepRecordOf(step, steps.length - 1, Date.now() - stepStartedAt) });
+      emit({ type: 'step.finish', step: await stepRecordOf(req.node, step, steps.length - 1, Date.now() - stepStartedAt) });
     },
   });
 
@@ -234,7 +234,7 @@ function outputOf(steps: StepResult<ToolSet>[], partialText: string, settings: C
   return partialText || steps.at(-1)?.text || '';
 }
 
-async function stepRecordOf(step: StepResult<ToolSet>, index: number, durationMs: number): Promise<StepRecord> {
+async function stepRecordOf(node: AgentNode, step: StepResult<ToolSet>, index: number, durationMs: number): Promise<StepRecord> {
   const inputTokens = step.usage.inputTokens ?? 0;
   const outputTokens = step.usage.outputTokens ?? 0;
   return {
@@ -244,7 +244,7 @@ async function stepRecordOf(step: StepResult<ToolSet>, index: number, durationMs
     reasoning: step.reasoningText ?? null,
     finishReason: step.finishReason,
     usage: { inputTokens, outputTokens },
-    cost: reportedCost(step) ?? (await estimatedCost(step.model.modelId, inputTokens, outputTokens)),
+    cost: await stepCost(node.config.provider, step),
     durationMs,
     request: step.request.body ?? null,
     response: {
@@ -274,20 +274,6 @@ function abortedStepRecord(node: AgentNode, index: number, text: string, duratio
     response: null,
     aborted: true,
   };
-}
-
-function reportedCost(step: StepResult<ToolSet>): number | null {
-  const usage = step.providerMetadata?.openrouter?.usage as { cost?: number } | undefined;
-  return typeof usage?.cost === 'number' ? usage.cost : null;
-}
-
-async function estimatedCost(modelId: string, inputTokens: number, outputTokens: number): Promise<number | null> {
-  const model = await modelCatalog().then(
-    (models) => models.find((m) => m.id === modelId),
-    () => undefined,
-  );
-  if (!model) return null;
-  return inputTokens * model.pricing.prompt + outputTokens * model.pricing.completion;
 }
 
 function messageOf(e: unknown): string {

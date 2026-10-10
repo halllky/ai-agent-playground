@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/google": "^3.0.131",
     "@hono/node-server": "^2.1.4",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@tavily/core": "^0.7.14",

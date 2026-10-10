@@ -1,4 +1,4 @@
-import type { FileEntry, GraphDefinition, GraphRecord, ModelInfo, RunEvent, SessionDetail, SessionRecord, TurnRecord } from 'protocol';
+import type { FileEntry, GraphDefinition, GraphRecord, ModelInfo, ModelProvider, RunEvent, SessionDetail, SessionRecord, TurnRecord } from 'protocol';
 
 /** サーバー API の呼び出し。失敗はレスポンス本文をメッセージにした Error で投げる */
 export const api = {
@@ -18,7 +18,7 @@ export const api = {
   fileContent: (turnId: string, file: { volume: string; path: string }) =>
     request<{ content: string }>('GET', `/turns/${turnId}/files/content?${new URLSearchParams(file)}`),
 
-  models: () => request<ModelInfo[]>('GET', '/models'),
+  models: (provider: ModelProvider) => request<ModelInfo[]>('GET', `/models/${provider}`),
 
   /** ターンのイベントを保存済みのものから購読する。ターンが終わると自動で閉じる */
   followTurn(turnId: string, onEvent: (event: RunEvent) => void): () => void {

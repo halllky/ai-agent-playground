@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 import {
   accessPermissions,
+  defaultModelOf,
   memoryModes,
+  modelProviderLabels,
+  modelProviders,
   passModes,
   returnModes,
   searchDepths,
@@ -47,7 +50,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
   mainAgent: {
     label: 'メインエージェント',
     title: () => 'メイン',
-    summary: (node) => node.config.model,
+    summary: agentSummary,
     acceptsIncoming: false,
     emitsOutgoing: true,
     addable: (graph) => !graph.nodes.some((n) => n.kind === 'mainAgent'),
@@ -56,7 +59,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
   subAgent: {
     label: 'サブエージェント',
     title: (node) => node.config.name,
-    summary: (node) => node.config.model,
+    summary: agentSummary,
     acceptsIncoming: true,
     emitsOutgoing: true,
     addable: () => true,
@@ -210,13 +213,25 @@ const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[v
 const memoryOptions = memoryModes.map((value) => ({ value, label: memoryLabels[value] }));
 const permissionOptions = accessPermissions.map((value) => ({ value, label: permissionLabels[value] }));
 const searchDepthOptions = searchDepths.map((value) => ({ value, label: value === 'basic' ? '標準' : '詳細（クレジットを多く使う）' }));
+const providerOptions = modelProviders.map((value) => ({ value, label: modelProviderLabels[value] }));
+
+function agentSummary(node: AgentNode): string {
+  return `${modelProviderLabels[node.config.provider]} · ${node.config.model}`;
+}
 
 /** エージェント系ノードに共通の設定項目 */
 function AgentFields<N extends AgentNode>({ node, onChange }: { node: N; onChange: (node: N) => void }) {
   const set = (config: Partial<N['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
   return (
     <>
-      <ModelField value={node.config.model} onChange={(model) => set({ model } as Partial<N['config']>)} />
+      <SelectField
+        label="プロバイダ"
+        value={node.config.provider}
+        options={providerOptions}
+        // モデル ID はプロバイダごとに別物なので、切り替えたら既定のモデルに戻す
+        onChange={(provider) => set({ provider, model: defaultModelOf[provider] } as Partial<N['config']>)}
+      />
+      <ModelField provider={node.config.provider} value={node.config.model} onChange={(model) => set({ model } as Partial<N['config']>)} />
       <TextField label="システムプロンプト" multiline value={node.config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt } as Partial<N['config']>)} />
       <NumberField label="最大ステップ数" min={1} value={node.config.maxSteps} onChange={(maxSteps) => set({ maxSteps } as Partial<N['config']>)} />
     </>

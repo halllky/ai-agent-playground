@@ -13,6 +13,7 @@
 - Node.js 22 以上が必要（nvm-windows なら `nvm use 24.21.0`）。
 - `npm install`
 - `apps/server/.env.example` を `apps/server/.env` にコピーし、`OPENROUTER_API_KEY` を設定する。
+  エージェントのプロバイダに Gemini を選ぶなら `GOOGLE_GENERATIVE_AI_API_KEY`（Google AI Studio の API キー）、
   Web検索ノードを使うなら `TAVILY_API_KEY`、判定ノード（Jev）を使うなら `TYPESAFE_API_KEY` も設定する。
 
 ### 起動
@@ -47,7 +48,7 @@
 ### API キーなしで試す
 
 `.env` の `OPENROUTER_BASE_URL` に OpenAI 互換の Chat Completions API（ストリーミング対応）を返すサーバーを指定すると、
-OpenRouter の代わりにそちらへリクエストが送られる。
+プロバイダが OpenRouter のエージェントは、OpenRouter の代わりにそちらへリクエストを送る。
 
 ### テスト・型チェック
 

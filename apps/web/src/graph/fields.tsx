@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { judgeQuestionTypeLabels, judgeQuestionTypes, type JudgeQuestion, type ModelInfo } from 'protocol';
+import { judgeQuestionTypeLabels, judgeQuestionTypes, type JudgeQuestion, type ModelInfo, type ModelProvider } from 'protocol';
 import { useSession } from '../session/store.ts';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -61,10 +61,11 @@ export function SelectField<T extends string>(props: {
   );
 }
 
-/** OpenRouter のモデル一覧から選ぶ。一覧にない ID も入力できる */
-export function ModelField(props: { value: string; onChange: (value: string) => void }) {
+/** provider のモデル一覧から選ぶ。一覧にない ID も入力できる */
+export function ModelField(props: { provider: ModelProvider; value: string; onChange: (value: string) => void }) {
   const listId = useId();
-  const models = useSession((s) => s.models);
+  const models = useSession((s) => s.models[props.provider]);
+  const error = useSession((s) => s.modelErrors[props.provider]);
   const model = models?.find((m) => m.id === props.value);
   return (
     <Field label="モデル">
@@ -77,6 +78,7 @@ export function ModelField(props: { value: string; onChange: (value: string) => 
         ))}
       </datalist>
       {model && <span className="field-note">{describeModel(model)}</span>}
+      {error && <span className="field-note">モデル一覧を取得できません: {error}</span>}
     </Field>
   );
 }
@@ -215,9 +217,11 @@ function withType(question: Pick<JudgeQuestion, 'key' | 'instructions'>, type: J
 
 function describeModel(model: ModelInfo): string {
   const perMillion = (price: number) => (price * 1_000_000).toFixed(2);
-  const price =
-    model.pricing.prompt === 0 && model.pricing.completion === 0
+  const { pricing } = model;
+  const price = !pricing
+    ? '料金不明'
+    : pricing.prompt === 0 && pricing.completion === 0
       ? '無料'
-      : `$${perMillion(model.pricing.prompt)} / $${perMillion(model.pricing.completion)} per 1M`;
+      : `$${perMillion(pricing.prompt)} / $${perMillion(pricing.completion)} per 1M`;
   return `${model.supportsTools ? 'tools対応' : 'tools非対応'} · ${price} · ${Math.round(model.contextLength / 1000)}k`;
 }

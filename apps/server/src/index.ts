@@ -3,9 +3,9 @@ import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { fileRoutes } from './routes/files.ts';
 import { graphRoutes } from './routes/graphs.ts';
+import { modelRoutes } from './routes/models.ts';
 import { sessionRoutes } from './routes/sessions.ts';
 import { turnRoutes } from './routes/turns.ts';
-import { modelCatalog } from './openrouter/index.ts';
 import { closeInterruptedTurns } from './run/index.ts';
 
 closeInterruptedTurns();
@@ -17,7 +17,7 @@ const app = new Hono()
   .route('/sessions', sessionRoutes)
   .route('/turns', turnRoutes)
   .route('/turns', fileRoutes)
-  .get('/models', async (c) => c.json(await modelCatalog()));
+  .route('/models', modelRoutes);
 
 const port = Number(process.env.PORT ?? 8787);
 

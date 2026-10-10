@@ -1,6 +1,6 @@
 import { edgeKindBetween, isAgentNode, toolNamePattern, type GraphDefinition, type GraphNode, type JudgeQuestion } from './graph.ts';
 import { resourceSpecOf, toolNamesOf, volumePathError, volumeToolName } from './tools.ts';
-import type { ModelInfo } from './model.ts';
+import { modelProviderLabels, type ModelInfo, type ModelProvider } from './model.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
 export type GraphWarning = {
@@ -11,12 +11,11 @@ export type GraphWarning = {
 /**
  * 実行はできるが意図どおりに動かない可能性がある構成を列挙する。
  * 実行を止める判定には使わない（実験のため、警告付きでも実行できるようにしている）。
- * models が undefined（モデル一覧が未取得）なら、モデルに関する検査は省く。
+ * models にはプロバイダごとのモデル一覧を渡す。一覧が無い（未取得の）プロバイダのノードは、モデルに関する検査を省く。
  */
-export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | undefined): GraphWarning[] {
+export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<ModelProvider, ModelInfo[]>>): GraphWarning[] {
   const warnings: GraphWarning[] = [];
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
-  const modelById = models && new Map(models.map((m) => [m.id, m]));
 
   const mainCount = graph.nodes.filter((n) => n.kind === 'mainAgent').length;
   if (mainCount !== 1) {
@@ -30,9 +29,10 @@ export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | unde
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
     if (!isAgentNode(node)) continue;
     const outgoing = graph.edges.filter((e) => e.source === node.id);
-    const model = modelById?.get(node.config.model);
-    if (modelById && !model) {
-      warnings.push({ target: { nodeId: node.id }, message: `モデル ${node.config.model} が一覧にありません` });
+    const catalog = models[node.config.provider];
+    const model = catalog?.find((m) => m.id === node.config.model);
+    if (catalog && !model) {
+      warnings.push({ target: { nodeId: node.id }, message: `${modelProviderLabels[node.config.provider]} のモデル一覧に ${node.config.model} がありません` });
     }
     if (model && !model.supportsTools && outgoing.length > 0) {
       warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルからエッジが出ています' });

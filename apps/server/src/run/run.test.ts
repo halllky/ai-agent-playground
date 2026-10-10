@@ -2,20 +2,26 @@ import { randomUUID } from 'node:crypto';
 import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultGraph, findMainAgent, type AccessPermission, type CallSettings, type GraphDefinition, type RunEvent, type RunEventOf } from 'protocol';
+import { createDefaultGraph, findMainAgent, type AccessPermission, type CallSettings, type GraphDefinition, type ModelProvider, type RunEvent, type RunEventOf } from 'protocol';
 import { db, graphs, sessions, turns } from '../db/index.ts';
 import { abortTurn, followTurn, startTurn } from './index.ts';
 
 /** モデルID ごとに、受け取ったプロンプトから返すストリームを決める台本 */
 const scripts = new Map<string, (prompt: LanguageModelV3Prompt, options: LanguageModelV3CallOptions) => ReadableStream<LanguageModelV3StreamPart>>();
 
-vi.mock('../openrouter/index.ts', () => ({
-  languageModel: (modelId: string) =>
+/** 呼び出した LLM の `プロバイダ:モデルID` */
+const calledModels: string[] = [];
+
+vi.mock('../llm/index.ts', () => ({
+  languageModel: (provider: ModelProvider, modelId: string) =>
     new MockLanguageModelV3({
       modelId,
-      doStream: async (options) => ({ stream: scripts.get(modelId)!(options.prompt, options) }),
+      doStream: async (options) => {
+        calledModels.push(`${provider}:${modelId}`);
+        return { stream: scripts.get(modelId)!(options.prompt, options) };
+      },
     }),
-  modelCatalog: async () => [],
+  stepCost: async () => null,
 }));
 
 /** 判定ノードが Jev に送ったリクエスト */
@@ -60,6 +66,18 @@ describe('ターン実行', () => {
     expect(maxRunning).toBe(1);
     expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done' });
     expect(ofType(events, 'step.finish').at(-1)?.step.text).toBe('まとめました');
+  });
+
+  it('ノードごとに指定したプロバイダのモデルを呼び出す', async () => {
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt) ? streamOf(textParts('まとめました')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: 'A' } }])),
+    );
+    scripts.set('sub', () => streamOf(textParts('調査結果')));
+    calledModels.length = 0;
+
+    await runTurn(graphOf({ memory: 'fresh' }, 'gemini'), 'こんにちは');
+
+    expect(calledModels).toEqual(['openrouter:main', 'gemini:sub', 'openrouter:main']);
   });
 
   it('呼び出しのネストが上限に達したら打ち切る', async () => {
@@ -270,7 +288,7 @@ function graphWithMain(): GraphDefinition {
   return graph;
 }
 
-function graphOf(subDefaults: Pick<CallSettings, 'memory'>): GraphDefinition {
+function graphOf(subDefaults: Pick<CallSettings, 'memory'>, subProvider: ModelProvider = 'openrouter'): GraphDefinition {
   const graph = graphWithMain();
   graph.nodes.push({
     id: 'researcher',
@@ -279,6 +297,7 @@ function graphOf(subDefaults: Pick<CallSettings, 'memory'>): GraphDefinition {
     config: {
       name: 'researcher',
       description: '調べもの担当',
+      provider: subProvider,
       model: 'sub',
       systemPrompt: 'You research.',
       maxSteps: 5,

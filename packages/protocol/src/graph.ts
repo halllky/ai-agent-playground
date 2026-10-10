@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { defaultModelOf, modelProviders } from './model.ts';
 
 /** サブエージェントに何を渡すか */
 export const passModes = ['task', 'taskWithHistory'] as const;
@@ -21,10 +22,11 @@ const callSettingsSchema = z.object({
 /** サブエージェントの呼び出し方 */
 export type CallSettings = z.infer<typeof callSettingsSchema>;
 
-/** ツール名として OpenRouter / 各プロバイダが受け付ける文字種 */
+/** ツール名として各プロバイダが受け付ける文字種 */
 export const toolNamePattern = /^[A-Za-z0-9_-]{1,64}$/;
 
 const agentConfigSchema = z.object({
+  provider: z.enum(modelProviders),
   model: z.string(),
   systemPrompt: z.string(),
   maxSteps: z.number().int().positive(),
@@ -258,14 +260,12 @@ export function resolveCallSettings(edge: EdgeOf<'call'>, target: NodeOf<'subAge
   return { ...target.config.callDefaults, ...stripUndefined(edge.settings) };
 }
 
-const defaultModel = 'google/gemma-4-31b-it:free';
-
 const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['position']) => NodeOf<K> } = {
   mainAgent: (id, position) => ({
     id,
     kind: 'mainAgent',
     position,
-    config: { model: defaultModel, systemPrompt: 'You are a helpful assistant.', maxSteps: 10 },
+    config: { provider: 'openrouter', model: defaultModelOf.openrouter, systemPrompt: 'You are a helpful assistant.', maxSteps: 10 },
   }),
   subAgent: (id, position) => ({
     id,
@@ -274,7 +274,8 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
     config: {
       name: `agent_${id.slice(0, 4)}`,
       description: '',
-      model: defaultModel,
+      provider: 'openrouter',
+      model: defaultModelOf.openrouter,
       systemPrompt: '',
       maxSteps: 10,
       callDefaults: { pass: 'task', returns: 'finalText', memory: 'fresh' },
