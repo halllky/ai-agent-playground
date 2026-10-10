@@ -1,11 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, TurnRecord } from 'protocol';
-import { nodeTitle } from '../graph/kinds.tsx';
-import { Markdown } from '../markdown/Markdown.tsx';
-import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store.ts';
-import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives.tsx';
-import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree.ts';
-import { formatCost, formatDuration, formatTokens, formatTotals } from './totals.ts';
+import { nodeTitle } from '../graph/kinds';
+import { Markdown } from '../markdown/Markdown';
+import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
+import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives';
+import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
+import { formatCost, formatDuration, formatTokens, formatTotals } from './totals';
 
 /** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
@@ -117,7 +117,12 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
   const liveText = useSession((s) => s.liveText[call.callId]);
   return (
     <>
-      {call.totals.steps > 1 && <div className="my-1 text-xs text-muted">合計: {formatTotals(call.totals)}</div>}
+      {call.totals.steps > 1 && (
+        <div className="flex gap-2 my-1 text-xs text-muted select-none">
+          <span>合計:</span>
+          {formatTotals(call.totals)}
+        </div>
+      )}
       {call.steps.map((step) => (
         <Step key={step.index} step={step} liveText={step.record ? undefined : liveText} graph={graph} />
       ))}
@@ -144,7 +149,7 @@ function Step({ step, liveText, graph }: { step: StepView; liveText: string | un
   );
 }
 
-/** ステップの内訳の行。開くと思考と生のリクエスト・レスポンスを見せる */
+/** LLM への1リクエスト分のうちステップの内訳の行。開くと思考と生のリクエスト・レスポンスを見せる */
 function StepEntry({ step }: { step: StepView }) {
   const { record } = step;
   if (!record) {
@@ -169,7 +174,7 @@ function StepEntry({ step }: { step: StepView }) {
   );
 }
 
-/** ツール呼び出し結果欄 */
+/** LLM への1リクエスト分のうちツール呼び出し内容の表示 */
 function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition }) {
   const { child, result } = tool;
   const metrics = result ? [formatDuration(result.durationMs)] : [];
@@ -245,12 +250,12 @@ const logColors: Record<RunEventOf<'log'>['level'], string> = {
 };
 
 function StatusDot({ status }: { status: RunStatus }) {
-  return <span className={`mr-1.5 inline-block size-[7px] rounded-full ${statusDotColors[status]}`} />;
+  return <span className={`mr-1.5 inline-block size-[4px] rounded-full ${statusDotColors[status]}`} />;
 }
 
 const statusDotColors: Record<RunStatus, string> = {
   running: 'bg-accent',
-  done: 'bg-muted',
+  done: 'bg-muted opacity-10',
   error: 'bg-danger',
   aborted: 'bg-warn',
 };

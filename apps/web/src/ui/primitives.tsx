@@ -20,7 +20,7 @@ export function Disclosure({ className, summary, children }: { className?: strin
   const [open, setOpen] = useState(false);
   return (
     <details className={className} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary className="cursor-pointer text-muted">{summary}</summary>
+      <summary className="cursor-pointer text-muted select-none">{summary}</summary>
       {open && children()}
     </details>
   );

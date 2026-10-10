@@ -17,9 +17,15 @@ export function totalsOf(steps: StepRecord[]): Totals {
   );
 }
 
-/** 集計値を1行の表示用の文字列にする */
-export function formatTotals(totals: Totals): string {
-  return `${totals.steps}ステップ・${formatTokens(totals.inputTokens, totals.outputTokens)}・${formatCost(totals.cost)}・${formatDuration(totals.durationMs)}`;
+/** 集計値を1行の表示用の複数のspanにする */
+export function formatTotals(totals: Totals): React.ReactNode {
+  return (
+    <>
+      <span>{formatTokens(totals.inputTokens, totals.outputTokens)}</span>
+      <span>{formatDuration(totals.durationMs)}</span>
+      <span>{formatCost(totals.cost)}</span>
+    </>
+  )
 }
 
 /** 入力・出力トークン数の表示 */

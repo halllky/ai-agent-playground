@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TurnRecord } from 'protocol';
-import { abort, createSession, openSession, send, turnPath, useSession } from '../session/store.ts';
-import { formatTotals, totalsOf } from './totals.ts';
-import { TurnView } from './TurnView.tsx';
+import { abort, createSession, openSession, send, turnPath, useSession } from '../session/store';
+import { formatTotals, totalsOf } from './totals';
+import { TurnView } from './TurnView';
 
 /**
  * セッションの切り替えと、表示中の分岐の会話と、発言の入力欄。エージェントの発言は Markdown で表示し、サブエージェント呼び出しは入れ子で表示する。
@@ -60,7 +60,12 @@ function BranchTotals({ path }: { path: TurnRecord[] }) {
   const events = useSession((s) => s.events);
   const totals = useMemo(() => totalsOf(path.flatMap((t) => (events[t.id] ?? []).flatMap((e) => (e.type === 'step.finish' ? [e.step] : [])))), [path, events]);
   if (totals.steps === 0) return null;
-  return <div className="border-b px-2 py-0.5 text-xs text-muted">分岐全体: {formatTotals(totals)}</div>;
+  return (
+    <div className="flex gap-2 border-b px-2 py-0.5 text-xs text-muted select-none">
+      <span>合計:</span>
+      {formatTotals(totals)}
+    </div>
+  )
 }
 
 function Composer({ running }: { running: TurnRecord | undefined }) {
