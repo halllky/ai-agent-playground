@@ -3,3 +3,6 @@ dist
 .env
 .env.local
 data
+
+# スキルは .agents に統合する
+.claude
