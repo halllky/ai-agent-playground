@@ -85,7 +85,7 @@ export function buildCallTree(events: RunEvent[]): CallTree {
       }
       case 'step.finish':
         if (!call) break;
-        Object.assign(openStep(call), { index: event.step.index, record: event.step });
+        openStep(call).record = event.step;
         break;
       case 'call.finish':
         if (!call) break;
@@ -115,11 +115,7 @@ function openStep(call: CallView): StepView {
  * ツールは呼び出しごとに呼ばれた順で1つずつ実行されるので、結果が届いていない最初のものが実行中のものになる。
  */
 function findTool(call: CallView, predicate: (tool: ToolCallView) => boolean): ToolCallView | undefined {
-  for (const step of call.steps) {
-    const tool = step.tools.find(predicate);
-    if (tool) return tool;
-  }
-  return undefined;
+  return call.steps.flatMap((step) => step.tools).find(predicate);
 }
 
 /** 呼び出しとその中のサブエージェントの totals を埋め、それらのステップの結果をすべて返す */

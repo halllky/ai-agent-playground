@@ -17,24 +17,30 @@ export function totalsOf(steps: StepRecord[]): Totals {
   );
 }
 
-/** 集計値を1行の表示用の複数のspanにする */
-export function formatTotals(totals: Totals): React.ReactNode {
+/** 集計値の「合計:」の1行 */
+export function TotalsLine({ className = '', totals }: { className?: string; totals: Totals }) {
   return (
-    <>
-      <span>{formatTokens(totals.inputTokens, totals.outputTokens)}</span>
-      <span>{formatDuration(totals.durationMs)}</span>
-      <span>{formatCost(totals.cost)}</span>
-    </>
-  )
+    <span className={`inline-flex gap-2 text-xs select-none ${className}`}>
+      <span>合計:</span>
+      {metricsOf(totals).map((metric) => (
+        <span key={metric}>{metric}</span>
+      ))}
+    </span>
+  );
+}
+
+/** トークン数・所要時間・コストを、表示する順に並べた文字列 */
+export function metricsOf(usage: Pick<Totals, 'inputTokens' | 'outputTokens' | 'durationMs' | 'cost'>): string[] {
+  return [formatTokens(usage.inputTokens, usage.outputTokens), formatDuration(usage.durationMs), formatCost(usage.cost)];
 }
 
 /** 入力・出力トークン数の表示 */
-export function formatTokens(inputTokens: number, outputTokens: number): string {
+function formatTokens(inputTokens: number, outputTokens: number): string {
   return `入力 ${inputTokens.toLocaleString()} / 出力 ${outputTokens.toLocaleString()} トークン`;
 }
 
 /** USD のコストの表示。不明なら「$?」 */
-export function formatCost(cost: number | null): string {
+function formatCost(cost: number | null): string {
   return cost === null ? '$?' : `$${cost.toFixed(6)}`;
 }
 

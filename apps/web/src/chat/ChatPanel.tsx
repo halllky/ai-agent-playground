@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TurnRecord } from 'protocol';
 import { abort, createSession, openSession, send, turnPath, useSession } from '../session/store';
-import { formatTotals, totalsOf } from './totals';
+import { TotalsLine, totalsOf } from './totals';
 import { TurnView } from './TurnView';
 
 /**
@@ -60,12 +60,7 @@ function BranchTotals({ path }: { path: TurnRecord[] }) {
   const events = useSession((s) => s.events);
   const totals = useMemo(() => totalsOf(path.flatMap((t) => (events[t.id] ?? []).flatMap((e) => (e.type === 'step.finish' ? [e.step] : [])))), [path, events]);
   if (totals.steps === 0) return null;
-  return (
-    <div className="flex gap-2 border-b px-2 py-0.5 text-xs text-muted select-none">
-      <span>合計:</span>
-      {formatTotals(totals)}
-    </div>
-  )
+  return <TotalsLine className="flex border-b px-2 py-0.5 text-muted" totals={totals} />;
 }
 
 function Composer({ running }: { running: TurnRecord | undefined }) {

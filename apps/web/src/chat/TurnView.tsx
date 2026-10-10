@@ -5,7 +5,7 @@ import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
 import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives';
 import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
-import { formatCost, formatDuration, formatTokens, formatTotals } from './totals';
+import { formatDuration, metricsOf, TotalsLine } from './totals';
 
 /** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
@@ -117,42 +117,38 @@ function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boole
  * 応答が終わったら、それらは集計の折りたたみに収め、最後のステップのテキストだけを応答として見せる。
  */
 function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
-  const liveText = useSession((s) => s.liveText[call.callId]);
-  const totals = (
-    <span className="inline-flex gap-2 text-xs select-none">
-      <span>合計:</span>
-      {formatTotals(call.totals)}
-    </span>
-  );
-
-  if (call.status === 'running') {
-    return (
-      <>
-        {call.totals.steps > 1 && <div className="my-1 text-muted">{totals}</div>}
-        {call.steps.map((step) => (
-          <Step key={step.index} step={step} liveText={step.record ? undefined : liveText} graph={graph} />
-        ))}
-        {call.steps.length === 0 && <Pending />}
-        <Notes notes={call.notes} />
-      </>
-    );
-  }
-
   const last = call.steps.at(-1);
   return (
     <>
-      {last && (
-        <Disclosure className="my-1" summary={totals}>
-          {() => (
-            <div className={nested}>
-              {call.steps.map((step) => (
-                <Step key={step.index} step={step} withText={step !== last} graph={graph} />
-              ))}
-            </div>
+      {/* 応答待ち中 */}
+      {call.status === 'running' && (
+        <>
+          {call.totals.steps > 1 && (
+            <TotalsLine className="my-1 text-muted" totals={call.totals} />
           )}
-        </Disclosure>
+          {call.steps.map((step) => (
+            <Step key={step.index} callId={call.callId} step={step} withText graph={graph} />
+          ))}
+          {!last && <Pending />}
+        </>
       )}
-      {last?.record?.text && <StepText record={last.record} />}
+
+      {/* 応答完了時 */}
+      {last && call.status !== 'running' && (
+        <>
+          <Disclosure className="my-1" summary={<TotalsLine totals={call.totals} />}>
+            {() => (
+              <div className={nested}>
+                {call.steps.map((step) => (
+                  <Step key={step.index} callId={call.callId} step={step} withText={step !== last} graph={graph} />
+                ))}
+              </div>
+            )}
+          </Disclosure>
+          {last.record?.text && <StepText record={last.record} />}
+        </>
+      )}
+
       <Notes notes={call.notes} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
     </>
@@ -160,13 +156,15 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
 }
 
 /** LLM への1リクエスト分。内訳の行、応答のテキスト、その応答で行ったツールコールの順に並べる */
-function Step({ step, liveText, withText = true, graph }: { step: StepView; liveText?: string; withText?: boolean; graph: GraphDefinition }) {
+function Step({ callId, step, withText, graph }: { callId: string; step: StepView; withText: boolean; graph: GraphDefinition }) {
   const { record } = step;
+  // 生成中のテキストは結果が届いていないステップだけが読む。届いたステップは text.delta のたびに描画し直さずに済む
+  const liveText = useSession((s) => (record ? undefined : s.liveText[callId]));
   return (
     <>
       <StepEntry step={step} />
       {withText && record?.text && <StepText record={record} />}
-      {!record && liveText && <Markdown className="my-1 text-muted" text={liveText} />}
+      {liveText && <Markdown className="my-1 text-muted" text={liveText} />}
       {step.tools.map((tool) => (
         <ToolCall key={tool.toolCallId} tool={tool} graph={graph} />
       ))}
@@ -189,15 +187,13 @@ function StepEntry({ step }: { step: StepView }) {
       </Entry>
     );
   }
-  const json = (value: unknown) => () => <CodeBlock text={JSON.stringify(value, null, 2)} />;
-  const metrics = [formatTokens(record.usage.inputTokens, record.usage.outputTokens), formatDuration(record.durationMs), formatCost(record.cost)];
   return (
-    <Entry status={record.aborted ? 'aborted' : 'done'} label={`${record.model} ${record.finishReason}`} metrics={metrics}>
+    <Entry status={record.aborted ? 'aborted' : 'done'} label={`${record.model} ${record.finishReason}`} metrics={metricsOf({ ...record.usage, durationMs: record.durationMs, cost: record.cost })}>
       {() => (
         <>
           {record.reasoning && <Disclosure summary="思考">{() => <CodeBlock text={record.reasoning ?? ''} />}</Disclosure>}
-          {record.request !== null && <Disclosure summary="リクエスト">{json(record.request)}</Disclosure>}
-          {record.response !== null && <Disclosure summary="レスポンス">{json(record.response)}</Disclosure>}
+          {record.request !== null && <Disclosure summary="リクエスト">{() => <ValueBlock value={record.request} />}</Disclosure>}
+          {record.response !== null && <Disclosure summary="レスポンス">{() => <ValueBlock value={record.response} />}</Disclosure>}
         </>
       )}
     </Entry>
@@ -229,13 +225,18 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
     <Entry status={result ? (result.isError ? 'error' : 'done') : 'running'} label={tool.toolName} metrics={metrics}>
       {() => (
         <>
-          <CodeBlock text={JSON.stringify(tool.input, null, 2)} />
-          {result && <CodeBlock text={typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2)} />}
+          <ValueBlock value={tool.input} />
+          {result && <ValueBlock value={result.output} />}
           <Notes notes={tool.notes} />
         </>
       )}
     </Entry>
   );
+}
+
+/** ツールの入出力や LLM との生のやりとり。文字列はそのまま、それ以外は JSON で見せる */
+function ValueBlock({ value }: { value: unknown }) {
+  return <CodeBlock text={typeof value === 'string' ? value : JSON.stringify(value, null, 2)} />;
 }
 
 /** 応答欄に時系列で並ぶ、LLM へのリクエストやツールコールの1行。開くと中身を字下げして見せる */
