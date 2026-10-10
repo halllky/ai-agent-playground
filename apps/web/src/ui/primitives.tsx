@@ -26,7 +26,32 @@ export function Disclosure({ className, summary, children }: { className?: strin
   );
 }
 
-/** JSON などの整形済みテキスト。長い行は折り返す */
+/** JSON などの整形済みテキスト。長い行は折り返す。スクロールしても右上のコピーボタンは動かない */
 export function CodeBlock({ text }: { text: string }) {
-  return <pre className="my-1 max-h-[400px] overflow-auto rounded bg-surface-sub p-1.5 text-sm break-all whitespace-pre-wrap">{text}</pre>;
+  return (
+    <div className="relative my-1">
+      <CopyButton className="absolute top-1 right-6 px-1.5 py-px text-xs text-muted" text={text} />
+      <pre className="max-h-[400px] overflow-auto rounded bg-surface-sub p-1.5 text-sm break-all whitespace-pre-wrap">{text}</pre>
+    </div>
+  );
+}
+
+/** 押すとテキストをクリップボードにコピーし、しばらく結果を表示するボタン */
+export function CopyButton({ className, text }: { className?: string; text: string }) {
+  const [result, setResult] = useState<'copied' | 'failed' | null>(null);
+  const copy = () => {
+    const showResult = (r: 'copied' | 'failed') => {
+      setResult(r);
+      setTimeout(() => setResult(null), 1500);
+    };
+    navigator.clipboard.writeText(text).then(
+      () => showResult('copied'),
+      () => showResult('failed'),
+    );
+  };
+  return (
+    <button type="button" className={className} onClick={copy}>
+      {result === 'copied' ? 'コピーしました' : result === 'failed' ? 'コピーできません' : 'コピー'}
+    </button>
+  );
 }

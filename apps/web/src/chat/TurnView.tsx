@@ -3,7 +3,7 @@ import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, StepRecord, Turn
 import { nodeTitle } from '../graph/kinds';
 import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
-import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives';
+import { CodeBlock, CopyButton, Disclosure, ErrorNote, Pending } from '../ui/primitives';
 import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
 import { formatDuration, metricsOf, TotalsLine } from './totals';
 
@@ -293,25 +293,6 @@ const statusDotColors: Record<RunStatus, string> = {
   error: 'bg-danger',
   aborted: 'bg-warn',
 };
-
-function CopyButton({ text }: { text: string }) {
-  const [result, setResult] = useState<'copied' | 'failed' | null>(null);
-  const copy = () => {
-    const showResult = (r: 'copied' | 'failed') => {
-      setResult(r);
-      setTimeout(() => setResult(null), 1500);
-    };
-    navigator.clipboard.writeText(text).then(
-      () => showResult('copied'),
-      () => showResult('failed'),
-    );
-  };
-  return (
-    <button type="button" onClick={copy}>
-      {result === 'copied' ? 'コピーしました' : result === 'failed' ? 'コピーできません' : 'コピー'}
-    </button>
-  );
-}
 
 /** 呼び出しの応答として見せたテキスト。ツールコールやサブエージェントの中身は含めない */
 function responseText(call: CallView): string {

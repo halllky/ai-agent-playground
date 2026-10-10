@@ -285,7 +285,7 @@ describe('ターン実行', () => {
       isError: false,
       output: {
         answers: {
-          urgent: { question: '急ぎか', probabilityOfYes: 0.9, noMeans: '急がない' },
+          urgent: { probabilityOfYes: 0.9, noMeans: '急がない' },
           kind: {
             mostLikely: 'bug',
             choices: [
@@ -304,6 +304,8 @@ describe('ターン実行', () => {
         },
       },
     });
+    // 質問文はツールの説明にだけ載せ、回答には繰り返さない
+    expect(JSON.stringify(ofType(judged, 'tool.result')[0])).not.toContain('急ぎか');
     expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
   });
 });

@@ -8,7 +8,8 @@ const maxInputTokens = 32_000;
 
 /**
  * 判定ノードに定義した質問を、呼び出し元が渡した state について Jev に答えさせるツール。
- * 呼び出し元が値を取り違えないよう、回答は質問文と選択肢の意味を添えた確率として返す。
+ * 呼び出し元が値を取り違えないよう、回答は選択肢の意味を添えた確率として返す。
+ * 質問文はツールの説明に載せ、回答には含めない（会話履歴に毎回積まれてノイズになるため）。
  * 入力が大きすぎるときや API キーが無いときは、呼び出し時にエラーにする。
  */
 export function judgeTool(node: NodeOf<'judge'>): Tool {
@@ -57,11 +58,10 @@ function questionOf(question: JudgeQuestion): Question {
   }
 }
 
-/** Jev の回答を、質問文と各選択肢の意味を並べた、それだけで読める形にする */
+/** Jev の回答を、各選択肢の意味を並べた、質問のキーと合わせれば読める形にする */
 function answerOf(question: JudgeQuestion, response: ResultFor<Question> | undefined) {
   if (question.type === 'noul' && response?.type === 'noul') {
     return {
-      question: question.instructions,
       probabilityOfYes: response.noul,
       ...(question.yes ? { yesMeans: question.yes } : {}),
       ...(question.no ? { noMeans: question.no } : {}),
@@ -69,7 +69,6 @@ function answerOf(question: JudgeQuestion, response: ResultFor<Question> | undef
   }
   if (question.type === 'choice' && response?.type === 'choice') {
     return {
-      question: question.instructions,
       mostLikely: response.choice,
       choices: question.choices.map((c) => ({
         label: c.label,
@@ -80,7 +79,6 @@ function answerOf(question: JudgeQuestion, response: ResultFor<Question> | undef
   }
   if (question.type === 'score' && response?.type === 'score') {
     return {
-      question: question.instructions,
       expectedScore: response.score,
       levels: question.levels.map((l, i) => ({
         score: i,
