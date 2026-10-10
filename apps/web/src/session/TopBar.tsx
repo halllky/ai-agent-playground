@@ -1,4 +1,4 @@
-import { createGraph, createSession, dismissError, openSession, renameGraph, selectGraph, useSession } from './store.ts';
+import { createGraph, createSession, discardGraphChanges, dismissError, openSession, renameGraph, saveGraphs, selectGraph, useSession } from './store.ts';
 
 /** セッションと、編集・実行に使うグラフ構成の切り替え */
 export function TopBar() {
@@ -6,6 +6,7 @@ export function TopBar() {
   const sessionId = useSession((s) => s.sessionId);
   const graphs = useSession((s) => s.graphs);
   const graph = useSession((s) => s.graphs.find((g) => g.id === s.graphId));
+  const unsavedGraphs = useSession((s) => s.unsavedGraphs);
   const error = useSession((s) => s.error);
 
   return (
@@ -28,7 +29,7 @@ export function TopBar() {
         <select value={graph?.id ?? ''} onChange={(e) => void selectGraph(e.target.value)}>
           {graphs.map((g) => (
             <option key={g.id} value={g.id}>
-              {g.name}
+              {g.id in unsavedGraphs ? `${g.name} ●` : g.name}
             </option>
           ))}
         </select>
@@ -58,6 +59,17 @@ export function TopBar() {
         }}
       >
         名前変更
+      </button>
+      <button title="Ctrl+S" disabled={Object.keys(unsavedGraphs).length === 0} onClick={() => void saveGraphs()}>
+        保存
+      </button>
+      <button
+        disabled={!graph || !(graph.id in unsavedGraphs)}
+        onClick={() => {
+          if (graph && confirm(`「${graph.name}」の未保存の変更を破棄しますか？`)) discardGraphChanges(graph.id);
+        }}
+      >
+        変更を破棄
       </button>
 
       {error && (

@@ -11,6 +11,8 @@ type State = {
   modelErrors: Partial<Record<ModelProvider, string>>;
   /** 編集中のグラフ。セッションを開いているときはそのセッションが参照するグラフ */
   graphId: string | null;
+  /** 未保存の変更があるグラフの ID から、そのグラフを最後に保存したときの構成へ */
+  unsavedGraphs: Record<string, GraphDefinition>;
   sessionId: string | null;
   turns: TurnRecord[];
   activeTurnId: string | null;
@@ -29,6 +31,7 @@ const initialState: State = {
   models: {},
   modelErrors: {},
   graphId: null,
+  unsavedGraphs: {},
   sessionId: null,
   turns: [],
   activeTurnId: null,
@@ -98,7 +101,6 @@ export async function createSession(): Promise<void> {
 
 /** 編集対象のグラフを切り替える。セッションを開いていれば、そのセッションの参照先も切り替える */
 export async function selectGraph(graphId: string): Promise<void> {
-  await flushGraphSave();
   const { sessionId } = useSession.getState();
   await report(async () => {
     if (sessionId) {
@@ -118,29 +120,59 @@ export async function createGraph(name: string, definition?: GraphDefinition): P
   });
 }
 
-/** グラフの名前を変える。編集対象は切り替えない */
+/** グラフの名前を変える。編集対象は切り替えず、構成の未保存の変更もそのまま残す */
 export async function renameGraph(graphId: string, name: string): Promise<void> {
   await report(async () => {
     const graph = await api.updateGraph(graphId, { name });
-    useSession.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graph.id ? graph : g)) }));
+    useSession.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graph.id ? { ...graph, definition: g.definition } : g)) }));
   });
 }
 
-/** 編集中のグラフ構成を書き換える。保存は少し遅らせてまとめて行う */
+/** 編集中のグラフ構成を書き換える。サーバーへは保存せず、未保存の変更として持つ */
 export function updateGraphDefinition(update: (definition: GraphDefinition) => GraphDefinition): void {
-  const { graphId, graphs } = useSession.getState();
+  const { graphId, graphs, unsavedGraphs } = useSession.getState();
   const graph = graphs.find((g) => g.id === graphId);
   if (!graph) return;
   const definition = update(graph.definition);
-  useSession.setState({ graphs: graphs.map((g) => (g.id === graph.id ? { ...g, definition } : g)) });
-  if (pendingSave) clearTimeout(pendingSave.timer);
-  pendingSave = { graphId: graph.id, timer: setTimeout(() => void flushGraphSave(), 500) };
+  useSession.setState({
+    graphs: graphs.map((g) => (g.id === graph.id ? { ...g, definition } : g)),
+    unsavedGraphs: graph.id in unsavedGraphs ? unsavedGraphs : { ...unsavedGraphs, [graph.id]: graph.definition },
+  });
+}
+
+/** 未保存の変更があるグラフをすべて保存する。1つでも保存できなければ false */
+export async function saveGraphs(): Promise<boolean> {
+  const results = await Promise.all(
+    Object.keys(useSession.getState().unsavedGraphs).map(async (graphId) => {
+      const definition = useSession.getState().graphs.find((g) => g.id === graphId)?.definition;
+      if (!definition) return true;
+      const saved = await report(() => api.updateGraph(graphId, { definition }));
+      if (!saved) return false;
+      useSession.setState((s) => {
+        const { [graphId]: _, ...rest } = s.unsavedGraphs;
+        // 保存中にさらに編集されていたら、送った構成を最後に保存した構成として未保存のまま残す
+        const current = s.graphs.find((g) => g.id === graphId)?.definition;
+        return { unsavedGraphs: current === definition ? rest : { ...rest, [graphId]: definition } };
+      });
+      return true;
+    }),
+  );
+  return results.every((ok) => ok);
+}
+
+/** グラフの未保存の変更を捨て、最後に保存した構成に戻す */
+export function discardGraphChanges(graphId: string): void {
+  useSession.setState((s) => {
+    if (!(graphId in s.unsavedGraphs)) return {};
+    const { [graphId]: saved, ...rest } = s.unsavedGraphs;
+    return { graphs: s.graphs.map((g) => (g.id === graphId ? { ...g, definition: saved } : g)), unsavedGraphs: rest };
+  });
 }
 
 /** 表示中の分岐の末尾に発言を追加して実行する。セッションがなければ作る */
 export async function send(userText: string): Promise<void> {
-  // 実行はサーバー上の現在のグラフで行われるため、未保存の編集を先に反映する
-  await flushGraphSave();
+  // 実行はサーバー上の現在のグラフで行われるため、未保存の編集を先に保存する
+  if (!(await saveGraphs())) return;
   if (!useSession.getState().sessionId) await createSession();
   await startTurn(useSession.getState().activeTurnId, userText);
 }
@@ -150,7 +182,7 @@ export async function send(userText: string): Promise<void> {
  * userText を省略すると同じ発言で再実行し、渡すとその発言に書き換えて再送信する。
  */
 export async function branchFrom(turn: TurnRecord, userText = turn.userText): Promise<void> {
-  await flushGraphSave();
+  if (!(await saveGraphs())) return;
   await startTurn(turn.parentTurnId, userText);
 }
 
@@ -211,17 +243,6 @@ function latestLeafOf(turns: TurnRecord[], turnId: string): string {
     if (children.length === 0) return leaf;
     leaf = children.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).id;
   }
-}
-
-let pendingSave: { graphId: string; timer: ReturnType<typeof setTimeout> } | undefined;
-
-async function flushGraphSave(): Promise<void> {
-  if (!pendingSave) return;
-  const { graphId, timer } = pendingSave;
-  clearTimeout(timer);
-  pendingSave = undefined;
-  const graph = useSession.getState().graphs.find((g) => g.id === graphId);
-  if (graph) await report(() => api.updateGraph(graphId, { definition: graph.definition }));
 }
 
 const following = new Map<string, () => void>();
