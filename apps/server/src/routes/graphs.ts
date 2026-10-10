@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { createDefaultGraph, graphDefinitionSchema, type GraphRecord } from 'protocol';
-import { db, graphs, sessions } from '../db/index.ts';
+import { db, graphs, sessions, turns } from '../db/index.ts';
 import { parseBody } from './parseBody.ts';
 
 const createSchema = z.object({ name: z.string().min(1), definition: graphDefinitionSchema.optional() });
 const updateSchema = z.object({ name: z.string().min(1).optional(), definition: graphDefinitionSchema.optional() });
 
-/** グラフの一覧・作成・更新・削除。セッションから参照されているグラフは削除できない */
+/**
+ * グラフの一覧・作成・更新・削除。
+ * 削除では、そのグラフを参照しているセッションも会話ごと消す。ただし実行中のターンがあれば削除しない
+ */
 export const graphRoutes = new Hono()
   .get('/', (c) => c.json<GraphRecord[]>(db.select().from(graphs).orderBy(asc(graphs.name)).all()))
   .post('/', async (c) => {
@@ -35,9 +38,17 @@ export const graphRoutes = new Hono()
   })
   .delete('/:id', (c) => {
     const id = c.req.param('id');
-    if (db.select({ id: sessions.id }).from(sessions).where(eq(sessions.graphId, id)).get()) {
-      return c.json({ error: 'このグラフを参照しているセッションがあります' }, 409);
-    }
-    db.delete(graphs).where(eq(graphs.id, id)).run();
+    const sessionIds = db.select({ id: sessions.id }).from(sessions).where(eq(sessions.graphId, id)).all().map((s) => s.id);
+    const running = db
+      .select({ id: turns.id })
+      .from(turns)
+      .where(and(inArray(turns.sessionId, sessionIds), eq(turns.status, 'running')))
+      .get();
+    if (running) return c.json({ error: 'このグラフを参照しているセッションに実行中のターンがあります' }, 409);
+    // ターン以下は外部キーの cascade で消える
+    db.transaction((tx) => {
+      tx.delete(sessions).where(eq(sessions.graphId, id)).run();
+      tx.delete(graphs).where(eq(graphs.id, id)).run();
+    });
     return c.body(null, 204);
   });

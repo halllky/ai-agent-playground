@@ -1,7 +1,9 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import { LockClosedIcon, LockOpenIcon } from '@heroicons/react/16/solid';
 import { Allotment } from 'allotment';
 import {
   Background,
+  ControlButton,
   Controls,
   Handle,
   MarkerType,
@@ -29,7 +31,7 @@ import {
 import { createGraph, showTurnGraph, updateGraphDefinition, useSession } from '../session/store.ts';
 import { EmptyNote } from '../ui/primitives.tsx';
 import { Hint, NumberField } from './fields.tsx';
-import { edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
+import { addableNodeKinds, edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
 
 /**
  * 編集中のグラフのキャンバスとインスペクタ。
@@ -101,6 +103,8 @@ function Canvas(props: {
   const { screenToFlowPosition } = useReactFlow();
   // 制御モードでは React Flow が測った寸法を渡し返さないとノードが表示されないため、保存対象ではないがここで保持する
   const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
+  const [locked, setLocked] = useState(false);
+  const editable = !readOnly && !locked;
 
   const nodes = definition.nodes.map(
     (node): FlowNode => ({
@@ -108,6 +112,7 @@ function Canvas(props: {
       type: 'graphNode',
       position: node.position,
       measured: measured[node.id],
+      deletable: !nodeKindView(node).single,
       selected: selection !== null && 'nodeId' in selection && selection.nodeId === node.id,
       data: { node, warnings: warningsFor(warnings, { nodeId: node.id }) },
     }),
@@ -135,14 +140,13 @@ function Canvas(props: {
   return (
     <div className="relative h-full">
       {!readOnly && (
-        <div className="absolute top-2 left-2 z-5 flex gap-1.5">
-          {(Object.keys(nodeKindViews) as NodeKind[])
-            .filter((kind) => nodeKindViews[kind].addable(definition))
-            .map((kind) => (
-              <button key={kind} onClick={() => addNode(kind)}>
-                + {nodeKindViews[kind].label}
-              </button>
-            ))}
+        // 折り返すために横幅いっぱいに広げるが、ボタンの無い所ではキャンバスを操作できるようにする
+        <div className="pointer-events-none absolute top-2 right-2 left-2 z-5 flex flex-wrap gap-1.5 *:pointer-events-auto">
+          {addableNodeKinds(definition).map((kind) => (
+            <button key={kind} onClick={() => addNode(kind)}>
+              + {nodeKindViews[kind].label}
+            </button>
+          ))}
         </div>
       )}
       <ReactFlow
@@ -151,9 +155,9 @@ function Canvas(props: {
         nodeTypes={nodeTypes}
         colorMode="system"
         fitView
-        nodesDraggable={!readOnly}
-        nodesConnectable={!readOnly}
-        deleteKeyCode={readOnly ? null : deleteKeys}
+        nodesDraggable={editable}
+        nodesConnectable={editable}
+        deleteKeyCode={editable ? deleteKeys : null}
         onNodesChange={(changes) => {
           for (const c of changes) {
             if (c.type === 'select') onSelect(selectionAfter(c.id, c.selected, (id) => ({ nodeId: id })));
@@ -193,7 +197,14 @@ function Canvas(props: {
         }}
       >
         <Background />
-        <Controls />
+        {/* 標準のロックは要素の選択までできなくするため、移動・接続・キーでの削除だけを止める自前のロックに置き換える */}
+        <Controls showInteractive={false}>
+          {!readOnly && (
+            <ControlButton title={locked ? 'ロックを解除' : 'ロック'} aria-label={locked ? 'ロックを解除' : 'ロック'} onClick={() => setLocked((l) => !l)}>
+              {locked ? <LockClosedIcon /> : <LockOpenIcon />}
+            </ControlButton>
+          )}
+        </Controls>
       </ReactFlow>
     </div>
   );
@@ -252,10 +263,14 @@ function Inspector(props: {
       <fieldset className={inspector} disabled={readOnly}>
         <InspectorHeader
           title={view.label}
-          onDelete={() => {
-            updateGraphDefinition((d) => removeNodes(d, [node.id]));
-            onSelect(null);
-          }}
+          onDelete={
+            view.single
+              ? undefined
+              : () => {
+                  updateGraphDefinition((d) => removeNodes(d, [node.id]));
+                  onSelect(null);
+                }
+          }
         />
         <WarningList messages={warningsFor(warnings, { nodeId: node.id })} />
         <view.Inspector
@@ -302,13 +317,16 @@ function Inspector(props: {
 
 const inspector = 'h-full min-w-0 overflow-y-auto border-t px-3 py-2';
 
-function InspectorHeader({ title, onDelete }: { title: string; onDelete: () => void }) {
+/** 選択中の要素の見出し。onDelete が無ければ削除できない要素として削除ボタンを出さない */
+function InspectorHeader({ title, onDelete }: { title: string; onDelete?: () => void }) {
   return (
     <div className="mb-2 flex items-center justify-between">
       <h3 className="font-bold">{title}</h3>
-      <button className="border-danger text-danger" onClick={onDelete}>
-        削除
-      </button>
+      {onDelete && (
+        <button className="border-danger text-danger" onClick={onDelete}>
+          削除
+        </button>
+      )}
     </div>
   );
 }

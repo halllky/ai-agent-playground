@@ -5,6 +5,8 @@ export const api = {
   graphs: () => request<GraphRecord[]>('GET', '/graphs'),
   createGraph: (name: string, definition?: GraphDefinition) => request<GraphRecord>('POST', '/graphs', { name, definition }),
   updateGraph: (id: string, patch: { name?: string; definition?: GraphDefinition }) => request<GraphRecord>('PUT', `/graphs/${id}`, patch),
+  /** グラフと、それを参照しているセッションを消す */
+  deleteGraph: (id: string) => request<void>('DELETE', `/graphs/${id}`),
 
   sessions: () => request<SessionRecord[]>('GET', '/sessions'),
   session: (id: string) => request<SessionDetail>('GET', `/sessions/${id}`),

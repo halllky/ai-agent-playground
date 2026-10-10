@@ -1,5 +1,11 @@
 @import 'tailwindcss';
 
+/*
+ * 既定の hover は @media (hover: hover) の中でしか効かず、タッチ対応の PC（Surface など）ではマウスを載せても反応しない。
+ * group-hover などもこれから作られるので、ここで一括して素の :hover にする
+ */
+@custom-variant hover (&:hover);
+
 @theme {
   --font-sans: "Noto Sans JP", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", ui-monospace, monospace;
@@ -70,7 +76,7 @@
   }
 
   button {
-    @apply cursor-pointer rounded border bg-surface-sub px-2.5 py-0.75 disabled:cursor-default disabled:opacity-50;
+    @apply cursor-pointer rounded border bg-surface-sub px-2.5 py-0.75 whitespace-nowrap select-none disabled:cursor-default disabled:opacity-50;
   }
 
   input,

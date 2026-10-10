@@ -33,8 +33,11 @@ type NodeKindView<K extends NodeKind> = {
   summary(node: NodeOf<K>): string;
   acceptsIncoming: boolean;
   emitsOutgoing: boolean;
-  /** パレットから追加できるか */
-  addable(graph: GraphDefinition): boolean;
+  /**
+   * グラフに常に1個だけ置く種別か。そうなら削除できない。
+   * 何かの間違いで欠けたグラフや、この種別が増える前に作ったグラフのために、グラフに無いときはパレットから追加できる
+   */
+  single: boolean;
   Inspector(props: { node: NodeOf<K>; onChange: (node: NodeOf<K>) => void }): ReactNode;
 };
 
@@ -53,7 +56,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: agentSummary,
     acceptsIncoming: false,
     emitsOutgoing: true,
-    addable: (graph) => !graph.nodes.some((n) => n.kind === 'mainAgent'),
+    single: true,
     Inspector: ({ node, onChange }) => <AgentFields node={node} onChange={onChange} />,
   },
   subAgent: {
@@ -62,7 +65,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: agentSummary,
     acceptsIncoming: true,
     emitsOutgoing: true,
-    addable: () => true,
+    single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'subAgent'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
       const setDefault = (settings: Partial<CallSettings>) => set({ callDefaults: { ...node.config.callDefaults, ...settings } });
@@ -85,7 +88,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: () => 'Markdown / JSON',
     acceptsIncoming: true,
     emitsOutgoing: false,
-    addable: (graph) => !graph.nodes.some((n) => n.kind === 'workfolder'),
+    single: true,
     Inspector: () => (
       <Hint>
         この会話の作業用フォルダです。エージェントからエッジを張ると、ファイルの参照・編集のツールが使えるようになります。
@@ -99,7 +102,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => `JSON ${node.config.files.length} ファイル`,
     acceptsIncoming: true,
     emitsOutgoing: false,
-    addable: () => true,
+    single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'resource'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
       return (
@@ -119,7 +122,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: () => 'Tavily',
     acceptsIncoming: true,
     emitsOutgoing: false,
-    addable: () => true,
+    single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'webSearch'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
       return (
@@ -137,7 +140,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => `質問 ${node.config.questions.length} 件`,
     acceptsIncoming: true,
     emitsOutgoing: false,
-    addable: () => true,
+    single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'judge'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
       return (
@@ -153,6 +156,11 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     },
   },
 };
+
+/** graph にパレットから追加できるノード種別 */
+export function addableNodeKinds(graph: GraphDefinition): NodeKind[] {
+  return (Object.keys(nodeKindViews) as NodeKind[]).filter((kind) => !nodeKindViews[kind].single || !graph.nodes.some((n) => n.kind === kind));
+}
 
 /** node の種別の振る舞い */
 export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {

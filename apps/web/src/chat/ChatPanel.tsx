@@ -2,12 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GraphDefinition, RunEvent, RunStatus, TurnRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds.tsx';
 import { Markdown } from '../markdown/Markdown.tsx';
-import { abort, branchFrom, send, showBranch, showTurnGraph, siblingsOf, turnPath, useSession } from '../session/store.ts';
+import { abort, branchFrom, createSession, openSession, send, showBranch, showTurnGraph, siblingsOf, turnPath, useSession } from '../session/store.ts';
 import { CodeBlock, ErrorNote, Pending } from '../ui/primitives.tsx';
 import { buildCallTree, type CallItem, type CallView } from './callTree.ts';
 
 /**
- * 表示中の分岐の会話と、発言の入力欄。エージェントの発言は Markdown で表示し、サブエージェント呼び出しは入れ子で表示する。
+ * セッションの切り替えと、表示中の分岐の会話と、発言の入力欄。エージェントの発言は Markdown で表示し、サブエージェント呼び出しは入れ子で表示する。
  * 過去の発言からは、編集して再送信・再実行で分岐を作り、分岐を切り替えて閲覧できる。
  * 実行は1セッションに1つまでとし、実行中は送信・分岐の作成をできなくする。
  */
@@ -25,6 +25,7 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col">
+      <SessionBar />
       <div className="flex-1 overflow-y-auto p-3">
         {path.map((turn) => (
           <TurnView key={turn.id} turn={turn} busy={runningTurn !== undefined} />
@@ -32,6 +33,25 @@ export function ChatPanel() {
         <div ref={bottomRef} />
       </div>
       <Composer running={runningTurn} />
+    </div>
+  );
+}
+
+/** 表示するセッションの切り替えと作成 */
+function SessionBar() {
+  const sessions = useSession((s) => s.sessions);
+  const sessionId = useSession((s) => s.sessionId);
+  return (
+    <div className="flex items-center gap-1.5 border-b px-2 py-1.5">
+      <select className="min-w-0 flex-1" value={sessionId ?? ''} onChange={(e) => void openSession(e.target.value || null)}>
+        <option value="">（新しい会話）</option>
+        {sessions.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.title}
+          </option>
+        ))}
+      </select>
+      <button onClick={() => void createSession()}>新規</button>
     </div>
   );
 }

@@ -128,6 +128,28 @@ export async function renameGraph(graphId: string, name: string): Promise<void> 
   });
 }
 
+/**
+ * グラフを、それを参照しているセッションごと消す。
+ * 開いていたセッションが消えたらセッションを閉じ、編集対象が消えたら残ったグラフの先頭を編集対象にする
+ */
+export async function deleteGraph(graphId: string): Promise<void> {
+  await report(async () => {
+    await api.deleteGraph(graphId);
+    const { sessionId, sessions } = useSession.getState();
+    if (sessions.some((s) => s.id === sessionId && s.graphId === graphId)) await openSession(null);
+    useSession.setState((s) => {
+      const { [graphId]: _, ...unsavedGraphs } = s.unsavedGraphs;
+      const graphs = s.graphs.filter((g) => g.id !== graphId);
+      return {
+        graphs,
+        unsavedGraphs,
+        sessions: s.sessions.filter((x) => x.graphId !== graphId),
+        graphId: s.graphId === graphId ? (graphs[0]?.id ?? null) : s.graphId,
+      };
+    });
+  });
+}
+
 /** 編集中のグラフ構成を書き換える。サーバーへは保存せず、未保存の変更として持つ */
 export function updateGraphDefinition(update: (definition: GraphDefinition) => GraphDefinition): void {
   const { graphId, graphs, unsavedGraphs } = useSession.getState();
