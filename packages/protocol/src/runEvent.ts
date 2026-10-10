@@ -37,6 +37,7 @@ export type RunEventBody =
   | { type: 'step.finish'; step: StepRecord }
   | { type: 'tool.call'; toolCallId: string; toolName: string; input: unknown }
   | { type: 'tool.result'; toolCallId: string; toolName: string; output: unknown; isError: boolean }
+  | { type: 'file.change'; volume: string; path: string; deleted: boolean }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'call.finish'; status: RunStatus; output: string; error: string | null }
   | { type: 'turn.finish'; status: RunStatus; error: string | null };

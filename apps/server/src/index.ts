@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
+import { fileRoutes } from './routes/files.ts';
 import { graphRoutes } from './routes/graphs.ts';
 import { sessionRoutes } from './routes/sessions.ts';
 import { turnRoutes } from './routes/turns.ts';
@@ -15,6 +16,7 @@ const app = new Hono()
   .route('/graphs', graphRoutes)
   .route('/sessions', sessionRoutes)
   .route('/turns', turnRoutes)
+  .route('/turns', fileRoutes)
   .get('/models', async (c) => c.json(await modelCatalog()));
 
 const port = Number(process.env.PORT ?? 8787);

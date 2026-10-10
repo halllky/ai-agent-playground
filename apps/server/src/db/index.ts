@@ -34,3 +34,20 @@ export function lineageOf(turnId: string): string[] {
     .all(turnId) as { id: string }[];
   return rows.map((r) => r.id);
 }
+
+/**
+ * ターンごとに版を残した行から、キーごとに lineage の中で最も近いターンの行を選ぶ。
+ * lineage は lineageOf の結果で、lineage に含まれないターンの行は無視する。
+ */
+export function nearestVersions<T extends { turnId: string }, K>(lineage: string[], rows: T[], keyOf: (row: T) => K): Map<K, T> {
+  const distance = new Map(lineage.map((turnId, i) => [turnId, i]));
+  const nearest = new Map<K, T>();
+  for (const row of rows) {
+    const d = distance.get(row.turnId);
+    if (d === undefined) continue;
+    const key = keyOf(row);
+    const current = nearest.get(key);
+    if (!current || d < distance.get(current.turnId)!) nearest.set(key, row);
+  }
+  return nearest;
+}

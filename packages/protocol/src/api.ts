@@ -34,3 +34,12 @@ export type TurnRecord = {
 
 /** セッションと、その全分岐のターン */
 export type SessionDetail = SessionRecord & { turns: TurnRecord[] };
+
+/** あるターン時点で存在するファイル1つ。中身は別に取得する */
+export type FileEntry = {
+  volume: string;
+  path: string;
+  /** 最後に書き込んだターン */
+  turnId: string;
+  at: number;
+};

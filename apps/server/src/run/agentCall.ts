@@ -3,6 +3,7 @@ import { stepCountIs, streamText, tool, type ModelMessage, type StepResult, type
 import { z } from 'zod';
 import {
   resolveCallSettings,
+  resourceSpecOf,
   type AgentNode,
   type CallSettings,
   type EdgeOf,
@@ -12,8 +13,12 @@ import {
   type RunEventHeader,
   type RunStatus,
   type StepRecord,
+  workfolderSpec,
 } from 'protocol';
+import { judgeTool } from '../judge/index.ts';
 import { languageModel, modelCatalog } from '../openrouter/index.ts';
+import { volumeTools } from '../volume/tools.ts';
+import { webSearchTool } from '../webSearch/index.ts';
 import { recallMemory, storeMemory, type TurnMemory } from './memory.ts';
 import { transcriptOf } from './transcript.ts';
 
@@ -129,33 +134,36 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
   return outcome;
 }
 
-/** 呼び出し元ノードから出るエッジを、そのノードが使えるツールに変換する */
+/** 呼び出し元ノードから出るエッジを、そのノードが使えるツールに変換する。ツールは呼び出しごとに逐次実行される */
 function toolsFor(scope: RunScope, caller: AgentNode, header: CallHeader, depth: number): ToolSet {
-  const runSerially = serialQueue();
   const tools: ToolSet = {};
   for (const edge of scope.graph.edges) {
     if (edge.source !== caller.id) continue;
     const target = scope.graph.nodes.find((n) => n.id === edge.target);
     if (edge.kind === 'call' && target?.kind === 'subAgent') {
-      tools[target.config.name] = subAgentTool(scope, edge, target, header, depth, runSerially);
+      tools[target.config.name] = subAgentTool(scope, edge, target, header, depth);
+    }
+    if (edge.kind === 'access' && (target?.kind === 'workfolder' || target?.kind === 'resource')) {
+      const spec = target.kind === 'workfolder' ? workfolderSpec : resourceSpecOf(target);
+      const context = { turnId: scope.turnId, emit: (body: RunEventBody) => scope.emit(header, body) };
+      Object.assign(tools, volumeTools(spec, edge.permission, context));
+    }
+    if (edge.kind === 'use' && target?.kind === 'webSearch') {
+      tools[target.config.name] = webSearchTool(target);
+    }
+    if (edge.kind === 'use' && target?.kind === 'judge') {
+      tools[target.config.name] = judgeTool(target);
     }
   }
-  return tools;
+  return serialized(tools);
 }
 
-function subAgentTool(
-  scope: RunScope,
-  edge: EdgeOf<'call'>,
-  target: NodeOf<'subAgent'>,
-  caller: CallHeader,
-  callerDepth: number,
-  runSerially: SerialQueue,
-) {
+function subAgentTool(scope: RunScope, edge: EdgeOf<'call'>, target: NodeOf<'subAgent'>, caller: CallHeader, callerDepth: number) {
   const settings = resolveCallSettings(edge, target);
   return tool({
     description: target.config.description,
     inputSchema: z.object({ task: z.string().describe('サブエージェントに依頼する内容') }),
-    execute: ({ task }, { toolCallId, messages }) => runSerially(async (): Promise<string> => {
+    execute: async ({ task }, { toolCallId, messages }): Promise<string> => {
       const depth = callerDepth + 1;
       if (depth > scope.graph.settings.maxCallDepth) {
         const message = `呼び出しの深さが上限（${scope.graph.settings.maxCallDepth}）に達したため ${target.config.name} を呼び出しませんでした`;
@@ -179,7 +187,7 @@ function subAgentTool(
 
       if (outcome.status === 'error') return `サブエージェントの実行に失敗しました: ${outcome.error}`;
       return outcome.output;
-    }),
+    },
   });
 }
 
@@ -187,20 +195,30 @@ function withCallerHistory(task: string, callerMessages: ModelMessage[]): string
   return `<caller_conversation>\n${transcriptOf(callerMessages)}\n</caller_conversation>\n\n<task>\n${task}\n</task>`;
 }
 
-type SerialQueue = <T>(task: () => Promise<T>) => Promise<T>;
-
 /**
- * 渡された処理を1つずつ順に実行する関数を作る。
+ * tools の実行を1つずつ順に行うようにする。
  * AI SDK は1ステップ内の複数ツールコールを並行実行するため、これで逐次実行にしている。
- * エージェント呼び出しごとに作るので、親のツール実行中に子がツールを実行しても待ち合わせにならない。
+ * エージェント呼び出しごとに行うので、親のツール実行中に子がツールを実行しても待ち合わせにならない。
  */
-function serialQueue(): SerialQueue {
+function serialized(tools: ToolSet): ToolSet {
   let tail: Promise<unknown> = Promise.resolve();
-  return (task) => {
-    const result = tail.then(task);
-    tail = result.catch(() => undefined);
-    return result;
-  };
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, t]) => {
+      const execute = t.execute;
+      if (!execute) return [name, t];
+      return [
+        name,
+        {
+          ...t,
+          execute: (input: unknown, options: Parameters<typeof execute>[1]) => {
+            const result = tail.then(() => execute(input, options));
+            tail = result.catch(() => undefined);
+            return result;
+          },
+        },
+      ];
+    }),
+  );
 }
 
 function outputOf(steps: StepResult<ToolSet>[], partialText: string, settings: CallSettings | null): string {

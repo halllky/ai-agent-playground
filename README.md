@@ -13,6 +13,7 @@
 - Node.js 22 以上が必要（nvm-windows なら `nvm use 24.21.0`）。
 - `npm install`
 - `apps/server/.env.example` を `apps/server/.env` にコピーし、`OPENROUTER_API_KEY` を設定する。
+  Web検索ノードを使うなら `TAVILY_API_KEY`、判定ノード（Jev）を使うなら `TYPESAFE_API_KEY` も設定する。
 
 ### 起動
 
@@ -31,10 +32,12 @@
   - 「集計」タブ：ターン別・ノード別のトークン数・コスト・所要時間。
 - サーバーのコンソールには HTTP のアクセスログと、LLM 呼び出しのエラーが出る。
 - ターンのイベントは `GET /api/turns/<turnId>/events`（SSE）で、保存済みのものから再生して取得できる。
+- ワークフォルダとリソースのファイルは画面右のファイル欄で、表示中のターン時点の中身を見られる。
+  API では `GET /api/turns/<turnId>/files` と `GET /api/turns/<turnId>/files/content?volume=<volume>&path=<path>` で取得できる。
 
 ### データ
 
-- グラフ構成・セッション・ログはすべて `apps/server/data/playground.db`（SQLite）に保存される。
+- グラフ構成・セッション・ログ・ワークフォルダとリソースのファイルはすべて `apps/server/data/playground.db`（SQLite）に保存される。
   場所は `.env` の `DATABASE_PATH` で変えられる。
 - まっさらな状態に戻すには、サーバーを止めて `apps/server/data` を削除する。
 - 実行中にサーバーを止めたターンは、次の起動時にエラー終了として閉じられる。

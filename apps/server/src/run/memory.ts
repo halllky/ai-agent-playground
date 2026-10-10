@@ -1,7 +1,7 @@
 import type { ModelMessage } from 'ai';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { CallSettings } from 'protocol';
-import { agentMemories, db, lineageOf } from '../db/index.ts';
+import { agentMemories, db, lineageOf, nearestVersions } from '../db/index.ts';
 
 /** ターン内でだけ持ち越す記憶。ターンの実行が終われば捨てる */
 export type TurnMemory = Map<string, ModelMessage[]>;
@@ -26,8 +26,7 @@ export function recallMemory(scope: MemoryScope, memoryKey: string, mode: CallSe
         .from(agentMemories)
         .where(and(eq(agentMemories.memoryKey, memoryKey), inArray(agentMemories.turnId, lineage)))
         .all();
-      const nearest = lineage.map((turnId) => rows.find((r) => r.turnId === turnId)).find((r) => r !== undefined);
-      return nearest?.messages ?? [];
+      return nearestVersions(lineage, rows, (r) => r.memoryKey).get(memoryKey)?.messages ?? [];
     }
   }
 }

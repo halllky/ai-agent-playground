@@ -1,4 +1,5 @@
-import { edgeKindBetween, toolNamePattern, type GraphDefinition, type GraphNode } from './graph.ts';
+import { edgeKindBetween, isAgentNode, toolNamePattern, type GraphDefinition, type GraphNode, type JudgeQuestion } from './graph.ts';
+import { resourceSpecOf, toolNamesOf, volumePathError, volumeToolName } from './tools.ts';
 import type { ModelInfo } from './model.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
@@ -21,8 +22,13 @@ export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | unde
   if (mainCount !== 1) {
     warnings.push({ target: { graph: true }, message: `メインエージェントがちょうど1つ必要です（現在 ${mainCount}）` });
   }
+  if (graph.nodes.filter((n) => n.kind === 'workfolder').length > 1) {
+    warnings.push({ target: { graph: true }, message: 'ワークフォルダはセッションに1つなので、複数置いても同じ中身を指します' });
+  }
 
   for (const node of graph.nodes) {
+    warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
+    if (!isAgentNode(node)) continue;
     const outgoing = graph.edges.filter((e) => e.source === node.id);
     const model = modelById?.get(node.config.model);
     if (modelById && !model) {
@@ -30,9 +36,6 @@ export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | unde
     }
     if (model && !model.supportsTools && outgoing.length > 0) {
       warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルからエッジが出ています' });
-    }
-    if (node.kind === 'subAgent' && !toolNamePattern.test(node.config.name)) {
-      warnings.push({ target: { nodeId: node.id }, message: 'ツール名は半角英数字・_・- の64文字以内にしてください' });
     }
     warnings.push(...duplicateToolNameWarnings(node, outgoing, nodeById));
   }
@@ -48,20 +51,73 @@ export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | unde
   return warnings;
 }
 
+/** ノード単体の設定の問題 */
+function configWarnings(node: GraphNode): string[] {
+  switch (node.kind) {
+    case 'subAgent':
+    case 'webSearch':
+      return toolNamePattern.test(node.config.name) ? [] : [toolNameMessage];
+    case 'judge':
+      return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...judgeQuestionWarnings(node.config.questions)];
+    case 'resource': {
+      const spec = resourceSpecOf(node);
+      const messages = toolNamePattern.test(volumeToolName(spec, 'patch_json'))
+        ? []
+        : ['名前は半角英数字・_・- の53文字以内にしてください（ツール名の接頭辞になります）'];
+      for (const file of node.config.files) {
+        const pathError = volumePathError(spec, file.path);
+        if (pathError) messages.push(pathError);
+        else if (!isJson(file.content)) messages.push(`${file.path} が JSON として読めません`);
+      }
+      return messages;
+    }
+    default:
+      return [];
+  }
+}
+
+const toolNameMessage = 'ツール名は半角英数字・_・- の64文字以内にしてください';
+
+function judgeQuestionWarnings(questions: JudgeQuestion[]): string[] {
+  if (questions.length === 0) return ['質問が1つ以上必要です'];
+  const messages: string[] = [];
+  const keys = questions.map((q) => q.key);
+  if (keys.some((k) => !k.trim())) messages.push('質問の名前が空です');
+  if (new Set(keys).size !== keys.length) messages.push('質問の名前が重複しています');
+  for (const q of questions) {
+    if (q.type === 'choice') {
+      const labels = q.choices.map((c) => c.label);
+      if (labels.length < 2 || labels.some((l) => !l.trim()) || new Set(labels).size !== labels.length) {
+        messages.push(`質問 ${q.key} には、空でも重複でもない選択肢が2つ以上必要です`);
+      }
+    }
+    if (q.type === 'score' && q.levels.length < 2) messages.push(`質問 ${q.key} には段階が2つ以上必要です`);
+  }
+  return messages;
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function duplicateToolNameWarnings(
   node: GraphNode,
   outgoing: GraphDefinition['edges'],
   nodeById: Map<string, GraphNode>,
 ): GraphWarning[] {
   const seen = new Set<string>();
-  const warnings: GraphWarning[] = [];
+  const duplicates = new Set<string>();
   for (const edge of outgoing) {
     const target = nodeById.get(edge.target);
-    if (target?.kind !== 'subAgent') continue;
-    if (seen.has(target.config.name)) {
-      warnings.push({ target: { nodeId: node.id }, message: `ツール名 ${target.config.name} が重複しています` });
+    for (const name of target ? toolNamesOf(edge, target) : []) {
+      if (seen.has(name)) duplicates.add(name);
+      seen.add(name);
     }
-    seen.add(target.config.name);
   }
-  return warnings;
+  return [...duplicates].map((name) => ({ target: { nodeId: node.id }, message: `ツール名 ${name} が重複しています` }));
 }

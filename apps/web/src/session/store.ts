@@ -12,6 +12,8 @@ type State = {
   sessionId: string | null;
   turns: TurnRecord[];
   activeTurnId: string | null;
+  /** グラフ欄に実行時のグラフを表示しているターン。null なら編集中のグラフを表示する */
+  viewingTurnId: string | null;
   /** ターンごとの永続イベント（`text.delta` を除く） */
   events: Record<string, RunEvent[]>;
   /** 呼び出しごとの、まだステップとして確定していない生成中テキスト */
@@ -27,6 +29,7 @@ const initialState: State = {
   sessionId: null,
   turns: [],
   activeTurnId: null,
+  viewingTurnId: null,
   events: {},
   liveText: {},
   error: null,
@@ -58,7 +61,7 @@ export async function initialize(): Promise<void> {
 export async function openSession(sessionId: string | null): Promise<void> {
   stopFollowingAll();
   if (!sessionId) {
-    useSession.setState({ sessionId: null, turns: [], activeTurnId: null, events: {}, liveText: {} });
+    useSession.setState({ sessionId: null, turns: [], activeTurnId: null, viewingTurnId: null, events: {}, liveText: {} });
     return;
   }
   await report(async () => {
@@ -68,6 +71,7 @@ export async function openSession(sessionId: string | null): Promise<void> {
       graphId: detail.graphId,
       turns: detail.turns,
       activeTurnId: detail.activeTurnId,
+      viewingTurnId: null,
       events: {},
       liveText: {},
     });
@@ -132,13 +136,31 @@ export async function send(userText: string): Promise<void> {
   // 実行はサーバー上の現在のグラフで行われるため、未保存の編集を先に反映する
   await flushGraphSave();
   if (!useSession.getState().sessionId) await createSession();
-  const { sessionId, activeTurnId } = useSession.getState();
+  await startTurn(useSession.getState().activeTurnId, userText);
+}
+
+/**
+ * turn と同じ親の下に新しい分岐を作って実行する。
+ * userText を省略すると同じ発言で再実行し、渡すとその発言に書き換えて再送信する。
+ */
+export async function branchFrom(turn: TurnRecord, userText = turn.userText): Promise<void> {
+  await flushGraphSave();
+  await startTurn(turn.parentTurnId, userText);
+}
+
+/** turnId を含む分岐に表示を切り替える。turnId から先は、それぞれ最も新しい子をたどった末端まで表示する */
+export async function showBranch(turnId: string): Promise<void> {
+  const { sessionId, turns } = useSession.getState();
   if (!sessionId) return;
-  await report(async () => {
-    const turn = await api.createTurn(sessionId, activeTurnId, userText);
-    useSession.setState((s) => ({ turns: [...s.turns, turn], activeTurnId: turn.id }));
-    follow(turn.id);
-  });
+  const leaf = latestLeafOf(turns, turnId);
+  useSession.setState({ activeTurnId: leaf });
+  for (const turn of turnPath(turns, leaf)) follow(turn.id);
+  await report(() => api.updateSession(sessionId, { activeTurnId: leaf }));
+}
+
+/** グラフ欄に turnId の実行時のグラフを表示する。null なら編集中のグラフに戻す */
+export function showTurnGraph(turnId: string | null): void {
+  useSession.setState({ viewingTurnId: turnId });
 }
 
 /** 実行中のターンの中断を要求する。中断の結果は購読中のイベントで届く */
@@ -151,6 +173,11 @@ export function dismissError(): void {
   useSession.setState({ error: null });
 }
 
+/** turn と同じ親を持つターン（turn 自身を含む）を作成順に */
+export function siblingsOf(turns: TurnRecord[], turn: TurnRecord): TurnRecord[] {
+  return turns.filter((t) => t.parentTurnId === turn.parentTurnId).sort((a, b) => a.createdAt - b.createdAt);
+}
+
 /** 会話の先頭から activeTurnId までのターン */
 export function turnPath(turns: TurnRecord[], activeTurnId: string | null): TurnRecord[] {
   const byId = new Map(turns.map((t) => [t.id, t]));
@@ -159,6 +186,25 @@ export function turnPath(turns: TurnRecord[], activeTurnId: string | null): Turn
     path.unshift(turn);
   }
   return path;
+}
+
+async function startTurn(parentTurnId: string | null, userText: string): Promise<void> {
+  const { sessionId } = useSession.getState();
+  if (!sessionId) return;
+  await report(async () => {
+    const turn = await api.createTurn(sessionId, parentTurnId, userText);
+    useSession.setState((s) => ({ turns: [...s.turns, turn], activeTurnId: turn.id }));
+    follow(turn.id);
+  });
+}
+
+function latestLeafOf(turns: TurnRecord[], turnId: string): string {
+  let leaf = turnId;
+  for (;;) {
+    const children = turns.filter((t) => t.parentTurnId === leaf);
+    if (children.length === 0) return leaf;
+    leaf = children.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).id;
+  }
 }
 
 let pendingSave: { graphId: string; timer: ReturnType<typeof setTimeout> } | undefined;
@@ -175,7 +221,8 @@ async function flushGraphSave(): Promise<void> {
 const following = new Map<string, () => void>();
 
 function follow(turnId: string): void {
-  if (following.has(turnId)) return;
+  // 終わったターンのイベントは取り込み済みなら変わらないので、購読し直さない
+  if (following.has(turnId) || useSession.getState().events[turnId]?.some((e) => e.type === 'turn.finish')) return;
   following.set(turnId, api.followTurn(turnId, receive));
 }
 

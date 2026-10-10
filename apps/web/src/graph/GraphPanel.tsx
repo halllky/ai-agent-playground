@@ -24,31 +24,61 @@ import {
   type GraphNode,
   type GraphWarning,
   type NodeKind,
+  type TurnRecord,
 } from 'protocol';
-import { updateGraphDefinition, useSession } from '../session/store.ts';
+import { createGraph, showTurnGraph, updateGraphDefinition, useSession } from '../session/store.ts';
 import { NumberField } from './fields.tsx';
 import { edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
 
-/** 編集中のグラフのキャンバスとインスペクタ */
+/**
+ * 編集中のグラフのキャンバスとインスペクタ。
+ * ターンの実行時のグラフを表示しているときは、読み取り専用で表示する。
+ */
 export function GraphPanel() {
   const graph = useSession((s) => s.graphs.find((g) => g.id === s.graphId));
+  const viewingTurn = useSession((s) => s.turns.find((t) => t.id === s.viewingTurnId));
   const models = useSession((s) => s.models);
   const [selection, setSelection] = useState<Selection>(null);
-  const warnings = useMemo(() => (graph ? diagnoseGraph(graph.definition, models) : []), [graph, models]);
-  if (!graph) return <div className="panel-empty">グラフがありません</div>;
+  const definition = viewingTurn?.graph ?? graph?.definition;
+  const warnings = useMemo(() => (definition ? diagnoseGraph(definition, models) : []), [definition, models]);
+  if (!definition) return <div className="panel-empty">グラフがありません</div>;
 
+  const readOnly = viewingTurn !== undefined;
   return (
-    <Allotment vertical defaultSizes={[65, 35]}>
-      <Allotment.Pane minSize={120}>
-        {/* グラフを切り替えたときに表示範囲を合わせ直すため、グラフごとに作り直す */}
-        <ReactFlowProvider key={graph.id}>
-          <Canvas definition={graph.definition} warnings={warnings} selection={selection} onSelect={setSelection} />
-        </ReactFlowProvider>
-      </Allotment.Pane>
-      <Allotment.Pane minSize={80}>
-        <Inspector definition={graph.definition} warnings={warnings} selection={selection} onSelect={setSelection} />
-      </Allotment.Pane>
-    </Allotment>
+    <div className="graph-panel">
+      {viewingTurn && <TurnGraphBanner turn={viewingTurn} />}
+      <div className="graph-panel-body">
+        <Allotment vertical defaultSizes={[65, 35]}>
+          <Allotment.Pane minSize={120}>
+            {/* 表示するグラフを切り替えたときに表示範囲を合わせ直すため、グラフごとに作り直す */}
+            <ReactFlowProvider key={viewingTurn?.id ?? graph?.id}>
+              <Canvas definition={definition} warnings={warnings} readOnly={readOnly} selection={selection} onSelect={setSelection} />
+            </ReactFlowProvider>
+          </Allotment.Pane>
+          <Allotment.Pane minSize={80}>
+            <Inspector definition={definition} warnings={warnings} readOnly={readOnly} selection={selection} onSelect={setSelection} />
+          </Allotment.Pane>
+        </Allotment>
+      </div>
+    </div>
+  );
+}
+
+function TurnGraphBanner({ turn }: { turn: TurnRecord }) {
+  const duplicate = () => {
+    const name = prompt('複製先の名前', 'ターンのグラフ');
+    if (!name) return;
+    showTurnGraph(null);
+    void createGraph(name, turn.graph);
+  };
+  return (
+    <div className="graph-banner">
+      <span className="graph-banner-text" title={turn.userText}>
+        「{turn.userText}」の実行時のグラフ（読み取り専用）
+      </span>
+      <button onClick={duplicate}>複製して編集</button>
+      <button onClick={() => showTurnGraph(null)}>現在のグラフに戻る</button>
+    </div>
   );
 }
 
@@ -62,10 +92,11 @@ const deleteKeys = ['Delete', 'Backspace'];
 function Canvas(props: {
   definition: GraphDefinition;
   warnings: GraphWarning[];
+  readOnly: boolean;
   selection: Selection;
   onSelect: Dispatch<SetStateAction<Selection>>;
 }) {
-  const { definition, warnings, selection, onSelect } = props;
+  const { definition, warnings, readOnly, selection, onSelect } = props;
   const { screenToFlowPosition } = useReactFlow();
   // 制御モードでは React Flow が測った寸法を渡し返さないとノードが表示されないため、保存対象ではないがここで保持する
   const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
@@ -101,22 +132,26 @@ function Canvas(props: {
 
   return (
     <div className="graph-canvas">
-      <div className="palette">
-        {(Object.keys(nodeKindViews) as NodeKind[])
-          .filter((kind) => nodeKindViews[kind].addable(definition))
-          .map((kind) => (
-            <button key={kind} onClick={() => addNode(kind)}>
-              + {nodeKindViews[kind].label}
-            </button>
-          ))}
-      </div>
+      {!readOnly && (
+        <div className="palette">
+          {(Object.keys(nodeKindViews) as NodeKind[])
+            .filter((kind) => nodeKindViews[kind].addable(definition))
+            .map((kind) => (
+              <button key={kind} onClick={() => addNode(kind)}>
+                + {nodeKindViews[kind].label}
+              </button>
+            ))}
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         colorMode="system"
         fitView
-        deleteKeyCode={deleteKeys}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        deleteKeyCode={readOnly ? null : deleteKeys}
         onNodesChange={(changes) => {
           for (const c of changes) {
             if (c.type === 'select') onSelect(selectionAfter(c.id, c.selected, (id) => ({ nodeId: id })));
@@ -188,25 +223,27 @@ function GraphNodeView({ data }: NodeProps<FlowNode>) {
           ⚠ {data.warnings.length}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} />
+      {view.emitsOutgoing && <Handle type="source" position={Position.Bottom} />}
     </div>
   );
 }
 
+/** 選択中の要素の設定。読み取り専用なら入力欄を無効にして表示だけする */
 function Inspector(props: {
   definition: GraphDefinition;
   warnings: GraphWarning[];
+  readOnly: boolean;
   selection: Selection;
   onSelect: Dispatch<SetStateAction<Selection>>;
 }) {
-  const { definition, warnings, selection, onSelect } = props;
+  const { definition, warnings, readOnly, selection, onSelect } = props;
   const node = selection && 'nodeId' in selection ? definition.nodes.find((n) => n.id === selection.nodeId) : undefined;
   const edge = selection && 'edgeId' in selection ? definition.edges.find((e) => e.id === selection.edgeId) : undefined;
 
   if (node) {
     const view = nodeKindView(node);
     return (
-      <div className="inspector">
+      <fieldset className="inspector" disabled={readOnly}>
         <InspectorHeader
           title={view.label}
           onDelete={() => {
@@ -219,13 +256,13 @@ function Inspector(props: {
           node={node}
           onChange={(changed) => updateGraphDefinition((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === changed.id ? changed : n)) }))}
         />
-      </div>
+      </fieldset>
     );
   }
   if (edge) {
     const view = edgeKindView(edge);
     return (
-      <div className="inspector">
+      <fieldset className="inspector" disabled={readOnly}>
         <InspectorHeader
           title="エッジ"
           onDelete={() => {
@@ -239,11 +276,11 @@ function Inspector(props: {
           target={definition.nodes.find((n) => n.id === edge.target)}
           onChange={(changed) => updateGraphDefinition((d) => ({ ...d, edges: d.edges.map((e) => (e.id === changed.id ? changed : e)) }))}
         />
-      </div>
+      </fieldset>
     );
   }
   return (
-    <div className="inspector">
+    <fieldset className="inspector" disabled={readOnly}>
       <h3>グラフ設定</h3>
       <WarningList messages={warningsFor(warnings, { graph: true })} />
       <NumberField
@@ -253,7 +290,7 @@ function Inspector(props: {
         onChange={(maxCallDepth) => updateGraphDefinition((d) => ({ ...d, settings: { ...d.settings, maxCallDepth } }))}
       />
       <p className="hint">ノードやエッジを選ぶと設定の編集や削除ができます。選んで Delete / Backspace キーでも削除できます。</p>
-    </div>
+    </fieldset>
   );
 }
 

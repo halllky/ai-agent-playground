@@ -1,8 +1,9 @@
 import type { ModelMessage } from 'ai';
 import { asc, eq, inArray, max } from 'drizzle-orm';
-import { findMainAgent, type GraphDefinition, type RunEvent, type RunEventBody } from 'protocol';
+import { findMainAgent, resourceSpecOf, type GraphDefinition, type RunEvent, type RunEventBody } from 'protocol';
 import { db, lineageOf, runEvents, turns } from '../db/index.ts';
 import { callAgent, type AgentCallOutcome, type CallHeader, type RunScope } from './agentCall.ts';
+import { Volume } from '../volume/index.ts';
 import type { TurnMemory } from './memory.ts';
 
 type RunListener = (event: RunEvent) => void;
@@ -93,6 +94,7 @@ class Run implements RunScope {
       return;
     }
 
+    this.seedResources(turnHeader);
     try {
       const outcome = await callAgent(this, {
         node: main,
@@ -106,6 +108,18 @@ class Run implements RunScope {
       this.finish(turnHeader, outcome.status, outcome.responseMessages, outcome.error);
     } catch (e) {
       this.finish(turnHeader, 'error', [], e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** リソースノードの設定のファイルを、この会話でまだ使われていなければ写す。以降の編集はこの会話の中だけに効く */
+  private seedResources(header: CallHeader): void {
+    for (const node of this.graph.nodes) {
+      if (node.kind !== 'resource') continue;
+      const spec = resourceSpecOf(node);
+      const volume = new Volume(this.turnId, spec);
+      for (const failure of volume.seed(node.config.files)) {
+        this.emit(header, { type: 'log', level: 'warn', message: `リソース ${node.config.name} のファイルを写せませんでした: ${failure}` });
+      }
     }
   }
 

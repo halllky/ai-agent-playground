@@ -55,6 +55,26 @@ export const runEvents = sqliteTable(
 );
 
 /**
+ * ターン時点のファイルを決めるための、ファイルの版。
+ * あるターンでのファイルの中身は、そのターンから会話の先頭へ向かって最も近いターンの版で決まる。
+ * 同じターン内で何度書いても1つの版にまとめる。
+ */
+export const fileRevisions = sqliteTable(
+  'file_revisions',
+  {
+    turnId: text()
+      .notNull()
+      .references(() => turns.id, { onDelete: 'cascade' }),
+    volume: text().notNull(),
+    path: text().notNull(),
+    /** null なら削除 */
+    content: text(),
+    at: integer().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.turnId, t.volume, t.path] })],
+);
+
+/**
  * セッションを通して継続するサブエージェントの記憶。
  * 上書きせず書いたターンごとに残すので、ターンの分岐ごとに異なる記憶を持てる。
  */

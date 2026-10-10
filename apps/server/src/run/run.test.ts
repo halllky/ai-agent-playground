@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultGraph, type CallSettings, type GraphDefinition, type RunEvent, type RunEventOf } from 'protocol';
+import { createDefaultGraph, findMainAgent, type AccessPermission, type CallSettings, type GraphDefinition, type RunEvent, type RunEventOf } from 'protocol';
 import { db, graphs, sessions, turns } from '../db/index.ts';
 import { abortTurn, followTurn, startTurn } from './index.ts';
 
@@ -16,6 +16,19 @@ vi.mock('../openrouter/index.ts', () => ({
       doStream: async (options) => ({ stream: scripts.get(modelId)!(options.prompt, options) }),
     }),
   modelCatalog: async () => [],
+}));
+
+/** 判定ノードが Jev に送ったリクエスト */
+const judgeRequests: unknown[] = [];
+
+vi.mock('@typesafe-ai/sdk', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@typesafe-ai/sdk')>()),
+  TypeSafeClient: class {
+    async systemOne(request: unknown) {
+      judgeRequests.push(request);
+      return { model: 'jev-test', answers: { urgent: { type: 'noul', noul: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 } };
+    }
+  },
 }));
 
 describe('ターン実行', () => {
@@ -94,11 +107,140 @@ describe('ターン実行', () => {
 
     expect(seenBySub).toEqual([['一つ目'], ['一つ目', '二つ目'], ['別の一つ目']]);
   });
+
+  it('ワークフォルダへの書き込みは同じ分岐の後のターンから読め、別の分岐からは読めない', async () => {
+    scripts.set('main', (prompt) => {
+      if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
+      const text = userTextOf(prompt);
+      return streamOf(
+        text === '書いて'
+          ? toolCallParts([{ name: 'workfolder_write', input: { path: 'memo.md', content: 'メモ' } }])
+          : toolCallParts([{ name: 'workfolder_read', input: { path: 'memo.md' } }]),
+      );
+    });
+    const graph = workfolderGraphOf('write');
+    const sessionId = createSession(graph);
+
+    const written = await runTurn(graph, '書いて', undefined, { sessionId, parentTurnId: null });
+    const readAfter = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: written[0].turnId });
+    const readElsewhere = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: null });
+
+    expect(ofType(written, 'file.change')).toMatchObject([{ volume: 'work', path: 'memo.md', deleted: false, nodeId: 'main' }]);
+    expect(ofType(readAfter, 'tool.result')[0]).toMatchObject({ output: 'メモ', isError: false });
+    expect(ofType(readElsewhere, 'tool.result')[0]).toMatchObject({ isError: true });
+  });
+
+  it('参照のみのアクセスでは書き込み系のツールを渡さない', async () => {
+    let toolNames: string[] = [];
+    scripts.set('main', (_prompt, options) => {
+      toolNames = (options.tools ?? []).map((t) => t.name);
+      return streamOf(textParts('ok'));
+    });
+
+    await runTurn(workfolderGraphOf('read'), '一覧を見て');
+
+    expect(toolNames.sort()).toEqual(['workfolder_list', 'workfolder_read']);
+  });
+
+  it('リソースは会話で初めて使うときに設定から写され、編集は分岐ごとに残る', async () => {
+    scripts.set('main', (prompt) => {
+      if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
+      return streamOf(
+        userTextOf(prompt) === '増やして'
+          ? toolCallParts([{ name: 'inventory_patch_json', input: { path: 'items.json', operations: [{ op: 'replace', path: '/count', value: 2 }] } }])
+          : toolCallParts([{ name: 'inventory_read', input: { path: 'items.json' } }]),
+      );
+    });
+    const graph = graphWithMain();
+    graph.nodes.push({
+      id: 'inventory',
+      kind: 'resource',
+      position: { x: 0, y: 0 },
+      config: { name: 'inventory', description: '在庫', files: [{ path: 'items.json', content: '{"count":1}' }] },
+    });
+    graph.edges.push({ id: 'main-inventory', kind: 'access', source: 'main', target: 'inventory', permission: 'write' });
+    const sessionId = createSession(graph);
+
+    const edited = await runTurn(graph, '増やして', undefined, { sessionId, parentTurnId: null });
+    const readAfter = await runTurn(graph, '見て', undefined, { sessionId, parentTurnId: edited[0].turnId });
+    const readElsewhere = await runTurn(graph, '見て', undefined, { sessionId, parentTurnId: null });
+
+    expect(ofType(edited, 'tool.result')[0]).toMatchObject({ isError: false });
+    expect(JSON.parse(ofType(readAfter, 'tool.result')[0].output as string)).toEqual({ count: 2 });
+    expect(JSON.parse(ofType(readElsewhere, 'tool.result')[0].output as string)).toEqual({ count: 1 });
+    expect(graph.nodes.find((n) => n.kind === 'resource')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });
+  });
+
+  it('Web検索は API キーが無ければツールのエラーとして返す', async () => {
+    vi.stubEnv('TAVILY_API_KEY', '');
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'search', input: { query: 'AI SDK' } }])),
+    );
+    const graph = graphWithMain();
+    graph.nodes.push({ id: 'web', kind: 'webSearch', position: { x: 0, y: 0 }, config: { name: 'search', maxResults: 3, searchDepth: 'basic' } });
+    graph.edges.push({ id: 'main-web', kind: 'use', source: 'main', target: 'web' });
+
+    const events = await runTurn(graph, '調べて');
+    vi.unstubAllEnvs();
+
+    expect(ofType(events, 'tool.result')[0]).toMatchObject({ toolName: 'search', isError: true });
+    expect(String(ofType(events, 'tool.result')[0].output)).toContain('TAVILY_API_KEY');
+  });
+
+  it('判定ノードは定義した質問を state と一緒に送り、大きすぎる state は送らない', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'test');
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt)
+        ? streamOf(textParts('ok'))
+        : streamOf(toolCallParts([{ name: 'triage', input: { state: userTextOf(prompt) } }])),
+    );
+    const graph = graphWithMain();
+    graph.nodes.push({
+      id: 'triage',
+      kind: 'judge',
+      position: { x: 0, y: 0 },
+      config: {
+        name: 'triage',
+        description: '',
+        model: '',
+        questions: [
+          { key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '急がない' },
+          { key: 'kind', type: 'choice', instructions: '種類', choices: [{ label: 'bug', description: '' }, { label: 'question', description: '質問' }] },
+          { key: 'severity', type: 'score', instructions: '深刻度', levels: ['軽微', '', '致命的'] },
+        ],
+      },
+    });
+    graph.edges.push({ id: 'main-triage', kind: 'use', source: 'main', target: 'triage' });
+    judgeRequests.length = 0;
+
+    const judged = await runTurn(graph, '本番が落ちています');
+    const tooLarge = await runTurn(graph, 'あ'.repeat(40_000));
+    vi.unstubAllEnvs();
+
+    expect(judgeRequests).toEqual([
+      {
+        state: '本番が落ちています',
+        questions: {
+          urgent: { type: 'noul', instructions: '急ぎか', criteria: { true: null, false: '急がない' } },
+          kind: { type: 'choice', instructions: '種類', criteria: { bug: null, question: '質問' } },
+          severity: { type: 'score', instructions: '深刻度', criteria: ['軽微', null, '致命的'] },
+        },
+      },
+    ]);
+    expect(ofType(judged, 'tool.result')[0]).toMatchObject({ isError: false, output: { answers: { urgent: { noul: 0.9 } } } });
+    expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
+  });
 });
 
-function graphOf(subDefaults: Pick<CallSettings, 'memory'>): GraphDefinition {
+/** モデル main のメインエージェントだけを持つグラフ */
+function graphWithMain(): GraphDefinition {
   const graph = createDefaultGraph();
-  graph.nodes[0].config.model = 'main';
+  findMainAgent(graph)!.config.model = 'main';
+  return graph;
+}
+
+function graphOf(subDefaults: Pick<CallSettings, 'memory'>): GraphDefinition {
+  const graph = graphWithMain();
   graph.nodes.push({
     id: 'researcher',
     kind: 'subAgent',
@@ -113,6 +255,13 @@ function graphOf(subDefaults: Pick<CallSettings, 'memory'>): GraphDefinition {
     },
   });
   graph.edges.push({ id: 'main-researcher', kind: 'call', source: 'main', target: 'researcher', settings: {} });
+  return graph;
+}
+
+function workfolderGraphOf(permission: AccessPermission): GraphDefinition {
+  const graph = graphWithMain();
+  graph.nodes.push({ id: 'work', kind: 'workfolder', position: { x: 0, y: 0 }, config: {} });
+  graph.edges.push({ id: 'main-work', kind: 'access', source: 'main', target: 'work', permission });
   return graph;
 }
 

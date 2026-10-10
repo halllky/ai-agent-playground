@@ -1,8 +1,11 @@
 import type { ReactNode } from 'react';
 import {
+  accessPermissions,
   memoryModes,
   passModes,
   returnModes,
+  searchDepths,
+  type AccessPermission,
   type AgentNode,
   type CallSettings,
   type EdgeOf,
@@ -12,7 +15,7 @@ import {
   type NodeKind,
   type NodeOf,
 } from 'protocol';
-import { ModelField, NumberField, SelectField, TextField } from './fields.tsx';
+import { JudgeQuestionsField, ModelField, NumberField, ResourceFilesField, SelectField, TextField } from './fields.tsx';
 
 /**
  * ノード種別ごとの画面上の振る舞い。
@@ -26,6 +29,7 @@ type NodeKindView<K extends NodeKind> = {
   /** ノード本体に出す要約 */
   summary(node: NodeOf<K>): string;
   acceptsIncoming: boolean;
+  emitsOutgoing: boolean;
   /** パレットから追加できるか */
   addable(graph: GraphDefinition): boolean;
   Inspector(props: { node: NodeOf<K>; onChange: (node: NodeOf<K>) => void }): ReactNode;
@@ -45,6 +49,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     title: () => 'メイン',
     summary: (node) => node.config.model,
     acceptsIncoming: false,
+    emitsOutgoing: true,
     addable: (graph) => !graph.nodes.some((n) => n.kind === 'mainAgent'),
     Inspector: ({ node, onChange }) => <AgentFields node={node} onChange={onChange} />,
   },
@@ -53,6 +58,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     title: (node) => node.config.name,
     summary: (node) => node.config.model,
     acceptsIncoming: true,
+    emitsOutgoing: true,
     addable: () => true,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'subAgent'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
@@ -66,6 +72,79 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
           <SelectField label="渡すもの" value={node.config.callDefaults.pass} options={passOptions} onChange={(pass) => setDefault({ pass })} />
           <SelectField label="返すもの" value={node.config.callDefaults.returns} options={returnOptions} onChange={(returns) => setDefault({ returns })} />
           <SelectField label="記憶" value={node.config.callDefaults.memory} options={memoryOptions} onChange={(memory) => setDefault({ memory })} />
+        </>
+      );
+    },
+  },
+  workfolder: {
+    label: 'ワークフォルダ',
+    title: () => 'ワークフォルダ',
+    summary: () => 'Markdown / JSON',
+    acceptsIncoming: true,
+    emitsOutgoing: false,
+    addable: (graph) => !graph.nodes.some((n) => n.kind === 'workfolder'),
+    Inspector: () => (
+      <p className="hint">
+        この会話の作業用フォルダです。エージェントからエッジを張ると、ファイルの参照・編集のツールが使えるようになります。
+        中身はターンごとに残り、過去のターンからやり直すとその時点の中身に戻ります。
+      </p>
+    ),
+  },
+  resource: {
+    label: 'リソース',
+    title: (node) => node.config.name,
+    summary: (node) => `JSON ${node.config.files.length} ファイル`,
+    acceptsIncoming: true,
+    emitsOutgoing: false,
+    addable: () => true,
+    Inspector: ({ node, onChange }) => {
+      const set = (config: Partial<NodeOf<'resource'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
+      return (
+        <>
+          <TextField label="名前（ツール名の接頭辞）" value={node.config.name} onChange={(name) => set({ name })} />
+          <TextField label="説明（エージェントに見える）" value={node.config.description} onChange={(description) => set({ description })} />
+          <h4>ファイル</h4>
+          <p className="hint">会話で初めて使うときにこの内容が写され、以降の編集はその会話の中だけに効きます。</p>
+          <ResourceFilesField files={node.config.files} onChange={(files) => set({ files })} />
+        </>
+      );
+    },
+  },
+  webSearch: {
+    label: 'Web検索',
+    title: (node) => node.config.name,
+    summary: () => 'Tavily',
+    acceptsIncoming: true,
+    emitsOutgoing: false,
+    addable: () => true,
+    Inspector: ({ node, onChange }) => {
+      const set = (config: Partial<NodeOf<'webSearch'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
+      return (
+        <>
+          <TextField label="ツール名" value={node.config.name} onChange={(name) => set({ name })} />
+          <NumberField label="最大件数" min={1} value={node.config.maxResults} onChange={(maxResults) => set({ maxResults })} />
+          <SelectField label="検索の深さ" value={node.config.searchDepth} options={searchDepthOptions} onChange={(searchDepth) => set({ searchDepth })} />
+        </>
+      );
+    },
+  },
+  judge: {
+    label: '判定（Jev）',
+    title: (node) => node.config.name,
+    summary: (node) => `質問 ${node.config.questions.length} 件`,
+    acceptsIncoming: true,
+    emitsOutgoing: false,
+    addable: () => true,
+    Inspector: ({ node, onChange }) => {
+      const set = (config: Partial<NodeOf<'judge'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
+      return (
+        <>
+          <TextField label="ツール名" value={node.config.name} onChange={(name) => set({ name })} />
+          <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
+          <TextField label="モデル（空なら jev-latest）" value={node.config.model} onChange={(model) => set({ model })} />
+          <h4>質問</h4>
+          <p className="hint">呼び出し元は判定対象の state だけを渡し、ここで決めた質問への回答を確率付きで受け取ります。</p>
+          <JudgeQuestionsField questions={node.config.questions} onChange={(questions) => set({ questions })} />
         </>
       );
     },
@@ -85,7 +164,7 @@ export function nodeTitle(graph: GraphDefinition, nodeId: string): string {
 
 /** edge の種別の振る舞い */
 export function edgeKindView(edge: GraphEdge): EdgeKindView<GraphEdge['kind']> {
-  return edgeKindViews[edge.kind];
+  return edgeKindViews[edge.kind] as EdgeKindView<GraphEdge['kind']>;
 }
 
 const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
@@ -110,14 +189,27 @@ const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
       );
     },
   },
+  access: {
+    label: (edge) => permissionLabels[edge.permission],
+    Inspector: ({ edge, onChange }) => (
+      <SelectField label="権限" value={edge.permission} options={permissionOptions} onChange={(permission) => onChange({ ...edge, permission })} />
+    ),
+  },
+  use: {
+    label: () => '',
+    Inspector: () => <p className="hint">接続先をツールとして使えるようにします。設定はありません。</p>,
+  },
 };
 
 const passLabels: Record<CallSettings['pass'], string> = { task: 'タスクのみ', taskWithHistory: '親の履歴も渡す' };
 const returnLabels: Record<CallSettings['returns'], string> = { finalText: '最終テキスト', allSteps: '全ステップ' };
 const memoryLabels: Record<CallSettings['memory'], string> = { fresh: '毎回まっさら', turn: 'ターン内で継続', session: 'セッションで継続' };
+const permissionLabels: Record<AccessPermission, string> = { read: '参照', write: '編集' };
 const passOptions = passModes.map((value) => ({ value, label: passLabels[value] }));
 const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));
 const memoryOptions = memoryModes.map((value) => ({ value, label: memoryLabels[value] }));
+const permissionOptions = accessPermissions.map((value) => ({ value, label: permissionLabels[value] }));
+const searchDepthOptions = searchDepths.map((value) => ({ value, label: value === 'basic' ? '標準' : '詳細（クレジットを多く使う）' }));
 
 /** エージェント系ノードに共通の設定項目 */
 function AgentFields<N extends AgentNode>({ node, onChange }: { node: N; onChange: (node: N) => void }) {

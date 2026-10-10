@@ -12,9 +12,12 @@
   "dependencies": {
     "@hono/node-server": "^2.1.4",
     "@openrouter/ai-sdk-provider": "^2.10.0",
+    "@tavily/core": "^0.7.14",
+    "@typesafe-ai/sdk": "^0.6.0",
     "ai": "^6.0.302",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
+    "fast-json-patch": "^3.1.1",
     "hono": "^4.13.13",
     "protocol": "*",
     "zod": "^4.6.5"

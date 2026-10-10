@@ -138,6 +138,34 @@ pre.json {
 
 /* graph */
 
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.graph-panel-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.graph-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--user-bubble);
+}
+
+.graph-banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .graph-canvas {
   position: relative;
   height: 100%;
@@ -199,8 +227,11 @@ pre.json {
 
 .inspector {
   height: 100%;
+  min-width: 0;
+  margin: 0;
   overflow-y: auto;
   padding: 8px 12px;
+  border: none;
   border-top: 1px solid var(--border);
 }
 
@@ -230,6 +261,68 @@ pre.json {
   flex-direction: column;
   gap: 2px;
   margin-bottom: 8px;
+}
+
+.resource-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.resource-file {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resource-file-header {
+  display: flex;
+  gap: 4px;
+}
+
+.resource-file-header input {
+  flex: 1;
+  min-width: 0;
+}
+
+.resource-file textarea {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.judge-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.judge-question {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.judge-question-header,
+.list-editor-row {
+  display: flex;
+  gap: 4px;
+}
+
+.judge-question-header input,
+.list-editor-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .field-label {
@@ -299,10 +392,42 @@ pre.json {
   opacity: 1;
 }
 
-.copy-button {
+.message-actions button {
   padding: 1px 6px;
   font-size: 11px;
   color: var(--fg-sub);
+}
+
+.branch-switcher {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  color: var(--fg-sub);
+  font-size: 11px;
+}
+
+.branch-switcher button {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.user-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 8px 15%;
+}
+
+.user-editor textarea {
+  resize: vertical;
+}
+
+.user-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .message.assistant .text {
@@ -467,8 +592,73 @@ pre.json {
 /* files */
 
 .files {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   border-left: 1px solid var(--border);
+}
+
+.files-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.file-tree,
+.file-view {
+  height: 100%;
+  overflow: auto;
+  padding: 4px 6px;
+}
+
+.file-volume-title {
+  padding: 4px 0;
+  color: var(--fg-sub);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.file-list {
+  margin: 0;
+  padding-left: 12px;
+  list-style: none;
+}
+
+.file-volume > .file-list {
+  padding-left: 0;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 1px 4px;
+  border: none;
+  background: none;
+  text-align: left;
+}
+
+.file-item:hover {
+  background: var(--bg-sub);
+}
+
+.file-item.selected {
+  background: var(--user-bubble);
+}
+
+.file-changed {
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.file-view {
+  border-top: 1px solid var(--border);
+}
+
+.file-view-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  word-break: break-all;
 }
 
 /* log */

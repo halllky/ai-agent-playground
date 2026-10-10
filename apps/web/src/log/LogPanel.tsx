@@ -111,6 +111,8 @@ function summaryOf(event: RunEvent): string {
       return `${event.toolName} ${JSON.stringify(event.input)}`;
     case 'tool.result':
       return `${event.isError ? '✖ ' : ''}${event.toolName} ${typeof event.output === 'string' ? event.output : JSON.stringify(event.output)}`;
+    case 'file.change':
+      return `${event.deleted ? '削除' : '書き込み'} ${event.volume}:${event.path}`;
     case 'log':
       return `[${event.level}] ${event.message}`;
     case 'call.finish':

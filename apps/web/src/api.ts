@@ -1,4 +1,4 @@
-import type { GraphDefinition, GraphRecord, ModelInfo, RunEvent, SessionDetail, SessionRecord, TurnRecord } from 'protocol';
+import type { FileEntry, GraphDefinition, GraphRecord, ModelInfo, RunEvent, SessionDetail, SessionRecord, TurnRecord } from 'protocol';
 
 /** サーバー API の呼び出し。失敗はレスポンス本文をメッセージにした Error で投げる */
 export const api = {
@@ -14,6 +14,9 @@ export const api = {
   createTurn: (sessionId: string, parentTurnId: string | null, userText: string) =>
     request<TurnRecord>('POST', `/sessions/${sessionId}/turns`, { parentTurnId, userText }),
   abortTurn: (turnId: string) => request<void>('POST', `/turns/${turnId}/abort`),
+  turnFiles: (turnId: string) => request<FileEntry[]>('GET', `/turns/${turnId}/files`),
+  fileContent: (turnId: string, file: { volume: string; path: string }) =>
+    request<{ content: string }>('GET', `/turns/${turnId}/files/content?${new URLSearchParams(file)}`),
 
   models: () => request<ModelInfo[]>('GET', '/models'),
 
