@@ -33,7 +33,7 @@ export function followTurn(turnId: string, listener: RunListener): { live: boole
   const saved = db.select().from(runEvents).where(eq(runEvents.turnId, turnId)).orderBy(asc(runEvents.seq)).all();
   for (const row of saved) listener(row.event);
   const run = activeRuns.get(turnId);
-  return { live: run !== undefined, stop: run?.subscribe(listener) ?? (() => {}) };
+  return { live: run !== undefined, stop: run?.subscribe(listener) ?? (() => { }) };
 }
 
 /** サーバー停止で中断されたまま残っているターンを、エラー終了として閉じる */
@@ -102,7 +102,7 @@ class Run implements RunScope {
         toolCallId: null,
         depth: 0,
         settings: null,
-        task: userText,
+        taskForEventLog: userText,
         messages: [...conversationBefore(parentTurnId), { role: 'user', content: userText }],
       });
       this.finish(turnHeader, outcome.status, outcome.responseMessages, outcome.error);

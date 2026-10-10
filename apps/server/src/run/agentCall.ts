@@ -42,8 +42,8 @@ export type AgentCallRequest = {
   toolCallId: string | null;
   depth: number;
   settings: CallSettings | null;
-  /** イベントに残す、この呼び出しで与えた指示 */
-  task: string;
+  /** イベントに残す、この呼び出しで与えた指示。モデルには渡さない */
+  taskForEventLog: string;
   /** モデルに渡すメッセージ全体（記憶・履歴と、最後に今回の指示） */
   messages: ModelMessage[];
 };
@@ -65,7 +65,7 @@ export type AgentCallOutcome = {
 export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise<AgentCallOutcome> {
   const header: CallHeader = { callId: randomUUID(), parentCallId: req.parentCallId, nodeId: req.node.id };
   const emit = (body: RunEventBody) => scope.emit(header, body);
-  emit({ type: 'call.start', depth: req.depth, toolCallId: req.toolCallId, settings: req.settings, task: req.task });
+  emit({ type: 'call.start', depth: req.depth, toolCallId: req.toolCallId, settings: req.settings, task: req.taskForEventLog });
 
   const steps: StepResult<ToolSet>[] = [];
   // onStepFinish は fullStream の読み出しを待たずに呼ばれるので、記録はここで受け渡して fullStream の finish-step の位置で送る。
@@ -189,7 +189,7 @@ function subAgentTool(scope: RunScope, edge: EdgeOf<'call'>, target: NodeOf<'sub
         toolCallId,
         depth,
         settings,
-        task,
+        taskForEventLog: task,
         messages: [...memory, userMessage],
       });
       storeMemory(scope, edge.id, settings.memory, [...memory, userMessage, ...outcome.responseMessages]);
@@ -322,7 +322,7 @@ function slots<T>() {
   const entryOf = (key: number) => {
     let entry = entries.get(key);
     if (!entry) {
-      let resolve: (value: T | PromiseLike<T>) => void = () => {};
+      let resolve: (value: T | PromiseLike<T>) => void = () => { };
       const promise = new Promise<T>((r) => (resolve = r));
       entry = { promise, resolve };
       entries.set(key, entry);
