@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, TurnRecord } from 'protocol';
+import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, StepRecord, TurnRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds';
 import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
@@ -112,21 +112,47 @@ function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boole
   );
 }
 
-/** AI側の応答欄。LLM へのリクエストとツール呼び出しを時系列に並べる */
+/**
+ * AI側の応答欄。LLM へのリクエストとツール呼び出しを時系列に並べる。
+ * 応答が終わったら、それらは集計の折りたたみに収め、最後のステップのテキストだけを応答として見せる。
+ */
 function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
   const liveText = useSession((s) => s.liveText[call.callId]);
+  const totals = (
+    <span className="inline-flex gap-2 text-xs select-none">
+      <span>合計:</span>
+      {formatTotals(call.totals)}
+    </span>
+  );
+
+  if (call.status === 'running') {
+    return (
+      <>
+        {call.totals.steps > 1 && <div className="my-1 text-muted">{totals}</div>}
+        {call.steps.map((step) => (
+          <Step key={step.index} step={step} liveText={step.record ? undefined : liveText} graph={graph} />
+        ))}
+        {call.steps.length === 0 && <Pending />}
+        <Notes notes={call.notes} />
+      </>
+    );
+  }
+
+  const last = call.steps.at(-1);
   return (
     <>
-      {call.totals.steps > 1 && (
-        <div className="flex gap-2 my-1 text-xs text-muted select-none">
-          <span>合計:</span>
-          {formatTotals(call.totals)}
-        </div>
+      {last && (
+        <Disclosure className="my-1" summary={totals}>
+          {() => (
+            <div className={nested}>
+              {call.steps.map((step) => (
+                <Step key={step.index} step={step} withText={step !== last} graph={graph} />
+              ))}
+            </div>
+          )}
+        </Disclosure>
       )}
-      {call.steps.map((step) => (
-        <Step key={step.index} step={step} liveText={step.record ? undefined : liveText} graph={graph} />
-      ))}
-      {call.status === 'running' && call.steps.length === 0 && <Pending />}
+      {last?.record?.text && <StepText record={last.record} />}
       <Notes notes={call.notes} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
     </>
@@ -134,19 +160,23 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
 }
 
 /** LLM への1リクエスト分。内訳の行、応答のテキスト、その応答で行ったツールコールの順に並べる */
-function Step({ step, liveText, graph }: { step: StepView; liveText: string | undefined; graph: GraphDefinition }) {
+function Step({ step, liveText, withText = true, graph }: { step: StepView; liveText?: string; withText?: boolean; graph: GraphDefinition }) {
   const { record } = step;
-  const abortedMark = "after:text-muted after:content-['_…(中断)']";
   return (
     <>
       <StepEntry step={step} />
-      {record?.text && <Markdown className={`my-1 ${record.aborted ? abortedMark : ''}`} text={record.text} />}
+      {withText && record?.text && <StepText record={record} />}
       {!record && liveText && <Markdown className="my-1 text-muted" text={liveText} />}
       {step.tools.map((tool) => (
         <ToolCall key={tool.toolCallId} tool={tool} graph={graph} />
       ))}
     </>
   );
+}
+
+function StepText({ record }: { record: StepRecord }) {
+  const abortedMark = "after:text-muted after:content-['_…(中断)']";
+  return <Markdown className={`my-1 ${record.aborted ? abortedMark : ''}`} text={record.text} />;
 }
 
 /** LLM への1リクエスト分のうちステップの内訳の行。開くと思考と生のリクエスト・レスポンスを見せる */
@@ -223,10 +253,13 @@ function Entry({ status, label, metrics, children }: { status: RunStatus; label:
   );
   return (
     <Disclosure className="my-0.5 text-sm" summary={summary}>
-      {() => <div className="my-1 ml-1 border-l-2 pl-3">{children()}</div>}
+      {() => <div className={nested}>{children()}</div>}
     </Disclosure>
   );
 }
+
+/** 折りたたみを開いたときの中身。入れ子が分かるよう字下げして線を引く */
+const nested = 'my-1 ml-1 border-l-2 pl-3';
 
 /** ログやファイルの変更の記録 */
 function Notes({ notes }: { notes: CallNote[] }) {
