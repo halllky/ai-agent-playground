@@ -34,6 +34,8 @@ const positionSchema = z.object({ x: z.number(), y: z.number() });
 
 /** 判定ノードの質問の種類。noul は yes/no、choice は選択肢から1つ、score は段階評価 */
 export const judgeQuestionTypes = ['noul', 'choice', 'score'] as const;
+/** 判定ノードの質問の種類の表示名 */
+export const judgeQuestionTypeLabels: Record<(typeof judgeQuestionTypes)[number], string> = { noul: 'はい/いいえ', choice: '選択', score: '段階評価' };
 
 const judgeQuestionSchema = z.discriminatedUnion('type', [
   z.object({

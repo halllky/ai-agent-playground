@@ -26,7 +26,12 @@ vi.mock('@typesafe-ai/sdk', async (importOriginal) => ({
   TypeSafeClient: class {
     async systemOne(request: unknown) {
       judgeRequests.push(request);
-      return { model: 'jev-test', answers: { urgent: { type: 'noul', noul: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 } };
+      const answers = {
+        urgent: { type: 'noul', noul: 0.9 },
+        kind: { type: 'choice', choice: 'bug', confidence: 0.8, probabilities: { bug: 0.8, question: 0.2 } },
+        severity: { type: 'score', score: 1.5, confidence: 0.6, legend: {}, probabilities: { 0: 0.1, 1: 0.3, 2: 0.6 } },
+      };
+      return { model: 'jev-test', answers, usage: { input_tokens: 1, output_tokens: 1 } };
     }
   },
 }));
@@ -189,11 +194,14 @@ describe('ターン実行', () => {
 
   it('判定ノードは定義した質問を state と一緒に送り、大きすぎる state は送らない', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'test');
-    scripts.set('main', (prompt) =>
-      lastIsToolResult(prompt)
+    let description = '';
+    scripts.set('main', (prompt, options) => {
+      const tool = options.tools?.find((t) => t.name === 'triage');
+      description = tool?.type === 'function' ? (tool.description ?? '') : '';
+      return lastIsToolResult(prompt)
         ? streamOf(textParts('ok'))
-        : streamOf(toolCallParts([{ name: 'triage', input: { state: userTextOf(prompt) } }])),
-    );
+        : streamOf(toolCallParts([{ name: 'triage', input: { state: userTextOf(prompt) } }]));
+    });
     const graph = graphWithMain();
     graph.nodes.push({
       id: 'triage',
@@ -227,7 +235,30 @@ describe('ターン実行', () => {
         },
       },
     ]);
-    expect(ofType(judged, 'tool.result')[0]).toMatchObject({ isError: false, output: { answers: { urgent: { noul: 0.9 } } } });
+    expect(description).toContain('- urgent（はい/いいえ）: 急ぎか');
+    expect(ofType(judged, 'tool.result')[0]).toMatchObject({
+      isError: false,
+      output: {
+        answers: {
+          urgent: { question: '急ぎか', probabilityOfYes: 0.9, noMeans: '急がない' },
+          kind: {
+            mostLikely: 'bug',
+            choices: [
+              { label: 'bug', probability: 0.8 },
+              { label: 'question', means: '質問', probability: 0.2 },
+            ],
+          },
+          severity: {
+            expectedScore: 1.5,
+            levels: [
+              { score: 0, means: '軽微', probability: 0.1 },
+              { score: 1, probability: 0.3 },
+              { score: 2, means: '致命的', probability: 0.6 },
+            ],
+          },
+        },
+      },
+    });
     expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
   });
 });

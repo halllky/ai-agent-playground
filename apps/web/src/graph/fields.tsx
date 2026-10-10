@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { judgeQuestionTypes, type JudgeQuestion, type ModelInfo } from 'protocol';
+import { judgeQuestionTypeLabels, judgeQuestionTypes, type JudgeQuestion, type ModelInfo } from 'protocol';
 import { useSession } from '../session/store.ts';
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -138,8 +138,6 @@ export function JudgeQuestionsField(props: { questions: JudgeQuestion[]; onChang
     </div>
   );
 }
-
-const judgeQuestionTypeLabels: Record<JudgeQuestion['type'], string> = { noul: 'はい/いいえ', choice: '選択', score: '段階評価' };
 
 function JudgeCriteriaField({ question, onChange }: { question: JudgeQuestion; onChange: (question: JudgeQuestion) => void }) {
   switch (question.type) {
