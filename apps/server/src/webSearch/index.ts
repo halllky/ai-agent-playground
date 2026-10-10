@@ -3,16 +3,19 @@ import { tool, type Tool } from 'ai';
 import { z } from 'zod';
 import type { NodeOf } from 'protocol';
 
-/** Web検索ノードの設定で Tavily を検索するツール。API キーが無ければ、呼び出し時にエラーにする */
+/** Web検索ノードの設定で Tavily を検索するツール */
 export function webSearchTool(node: NodeOf<'webSearch'>): Tool {
   return tool({
     description: 'Web を検索し、関連するページのタイトル・URL・本文の抜粋を返す',
     inputSchema: z.object({ query: z.string().describe('検索語句') }),
-    execute: async ({ query }) => {
-      const response = await client().search(query, { maxResults: node.config.maxResults, searchDepth: node.config.searchDepth });
-      return response.results.map((r) => ({ title: r.title, url: r.url, content: r.content }));
-    },
+    execute: ({ query }) => search(node, query),
   });
+}
+
+/** Web検索ノードの設定で Tavily を検索し、関連するページのタイトル・URL・本文の抜粋を返す。API キーが無ければ例外にする */
+export async function search(node: NodeOf<'webSearch'>, query: string) {
+  const response = await client().search(query, { maxResults: node.config.maxResults, searchDepth: node.config.searchDepth });
+  return response.results.map((r) => ({ title: r.title, url: r.url, content: r.content }));
 }
 
 let cachedClient: TavilyClient | undefined;

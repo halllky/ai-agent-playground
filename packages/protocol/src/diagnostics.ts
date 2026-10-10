@@ -1,4 +1,15 @@
-import { edgeKindBetween, isAgentNode, toolNamePattern, type GraphDefinition, type GraphNode, type JudgeQuestion } from './graph.ts';
+import {
+  edgeKindBetween,
+  flowStages,
+  isAgentNode,
+  judgeAnswerOptions,
+  laneOf,
+  toolNamePattern,
+  type EdgeOf,
+  type GraphDefinition,
+  type GraphNode,
+  type JudgeQuestion,
+} from './graph.ts';
 import { resourceSpecOf, toolNamesOf, volumePathError, volumeToolName } from './tools.ts';
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from './model.ts';
 
@@ -24,11 +35,14 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
   if (graph.nodes.filter((n) => n.kind === 'workfolder').length > 1) {
     warnings.push({ target: { graph: true }, message: 'ワークフォルダはセッションに1つなので、複数置いても同じ中身を指します' });
   }
+  if (flowStages(graph) === null) {
+    warnings.push({ target: { graph: true }, message: 'フローが循環しています。循環している間はフローの段を実行しません' });
+  }
 
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
     if (!isAgentNode(node)) continue;
-    const outgoing = graph.edges.filter((e) => e.source === node.id);
+    const outgoing = graph.edges.filter((e) => e.source === node.id && laneOf(e.kind) === 'tools');
     const catalog = models[node.config.provider];
     const model = catalog?.find((m) => m.id === node.config.model);
     if (catalog && !model) {
@@ -43,8 +57,10 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
   for (const edge of graph.edges) {
     const source = nodeById.get(edge.source);
     const target = nodeById.get(edge.target);
-    if (!source || !target || edgeKindBetween(source, target) !== edge.kind) {
+    if (!source || !target || edgeKindBetween(source, target, laneOf(edge.kind)) !== edge.kind) {
       warnings.push({ target: { edgeId: edge.id }, message: 'このノード同士は接続できません' });
+    } else if (edge.kind === 'flow') {
+      warnings.push(...flowConditionWarnings(edge, source).map((message) => ({ target: { edgeId: edge.id }, message })));
     }
   }
 
@@ -94,6 +110,17 @@ function judgeQuestionWarnings(questions: JudgeQuestion[]): string[] {
     if (q.type === 'score' && q.levels.length < 2) messages.push(`質問 ${q.key} には段階が2つ以上必要です`);
   }
   return messages;
+}
+
+function flowConditionWarnings(edge: EdgeOf<'flow'>, source: GraphNode): string[] {
+  const { condition } = edge;
+  if (!condition) return [];
+  if (source.kind !== 'judge') return ['条件は判定ノードから出るフローにだけ付けられます。この条件は無視されます'];
+  const question = source.config.questions.find((q) => q.key === condition.questionKey);
+  if (!question) return [`条件の質問 ${condition.questionKey} が判定ノードにありません`];
+  const values = new Set(judgeAnswerOptions(question).map((o) => o.value));
+  if (!condition.anyOf.some((v) => values.has(v))) return ['条件を満たす回答が1つも選ばれていないため、何も流れません'];
+  return [];
 }
 
 function isJson(text: string): boolean {

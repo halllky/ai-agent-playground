@@ -48,6 +48,22 @@ export type AgentCallRequest = {
   messages: ModelMessage[];
 };
 
+/** サブエージェントへの依頼1件。ツールコールからでもフローの段からでも同じ手順で呼ぶ */
+export type SubAgentRequest = {
+  node: NodeOf<'subAgent'>;
+  settings: CallSettings;
+  /** 記憶を持ち越すときの識別子 */
+  memoryKey: string;
+  /** 呼び出し元からの指示。settings.pass が history なら使わない */
+  task: string;
+  /** 呼び出し元の会話。settings.pass が task なら使わない */
+  callerMessages: ModelMessage[];
+  /** 呼び出し元のイベントのヘッダ。呼び出せなかったときのログはここに残す */
+  caller: CallHeader;
+  toolCallId: string;
+  depth: number;
+};
+
 /** エージェント呼び出し1回分の結果 */
 export type AgentCallOutcome = {
   status: Exclude<RunStatus, 'running'>;
@@ -143,6 +159,35 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
   return outcome;
 }
 
+/**
+ * サブエージェントを呼び出し、呼び出し元に返す文章を得る。
+ * 呼び出しの深さが上限を超えるときや実行に失敗したときも、例外にせずその旨を文章で返す。
+ */
+export async function callSubAgent(scope: RunScope, req: SubAgentRequest): Promise<string> {
+  const { node, settings } = req;
+  if (req.depth > scope.graph.settings.maxCallDepth) {
+    const message = `呼び出しの深さが上限（${scope.graph.settings.maxCallDepth}）に達したため ${node.config.name} を呼び出しませんでした`;
+    scope.emit(req.caller, { type: 'log', level: 'warn', message });
+    return message;
+  }
+
+  const memory = recallMemory(scope, req.memoryKey, settings.memory);
+  const userMessage: ModelMessage = { role: 'user', content: promptOf(settings.pass, req.task, req.callerMessages) };
+  const outcome = await callAgent(scope, {
+    node,
+    parentCallId: req.caller.callId,
+    toolCallId: req.toolCallId,
+    depth: req.depth,
+    settings,
+    taskForEventLog: settings.pass === 'history' ? '' : req.task,
+    messages: [...memory, userMessage],
+  });
+  storeMemory(scope, req.memoryKey, settings.memory, [...memory, userMessage, ...outcome.responseMessages]);
+
+  if (outcome.status === 'error') return `サブエージェントの実行に失敗しました: ${outcome.error}`;
+  return outcome.output;
+}
+
 /** 呼び出し元ノードから出るエッジを、そのノードが使えるツールに変換する。ツールは呼び出しごとに逐次実行される */
 function toolsFor(scope: RunScope, caller: AgentNode, header: CallHeader, depth: number): ToolSet {
   const tools: ToolSet = {};
@@ -167,41 +212,36 @@ function toolsFor(scope: RunScope, caller: AgentNode, header: CallHeader, depth:
   return serialized(tools);
 }
 
+/** サブエージェントを呼び出すツール。会話だけを渡す呼び出し方なら、呼び出し元は指示を書かない */
 function subAgentTool(scope: RunScope, edge: EdgeOf<'call'>, target: NodeOf<'subAgent'>, caller: CallHeader, callerDepth: number) {
   const settings = resolveCallSettings(edge, target);
+  const call = (task: string, toolCallId: string, callerMessages: ModelMessage[]) =>
+    callSubAgent(scope, { node: target, settings, memoryKey: edge.id, task, callerMessages, caller, toolCallId, depth: callerDepth + 1 });
+  if (settings.pass === 'history') {
+    return tool({
+      description: target.config.description,
+      inputSchema: z.object({}),
+      execute: (_input, { toolCallId, messages }) => call('', toolCallId, messages),
+    });
+  }
   return tool({
     description: target.config.description,
     inputSchema: z.object({ task: z.string().describe('サブエージェントに依頼する内容') }),
-    execute: async ({ task }, { toolCallId, messages }): Promise<string> => {
-      const depth = callerDepth + 1;
-      if (depth > scope.graph.settings.maxCallDepth) {
-        const message = `呼び出しの深さが上限（${scope.graph.settings.maxCallDepth}）に達したため ${target.config.name} を呼び出しませんでした`;
-        scope.emit(caller, { type: 'log', level: 'warn', message });
-        return message;
-      }
-
-      const memory = recallMemory(scope, edge.id, settings.memory);
-      const prompt = settings.pass === 'taskWithHistory' ? withCallerHistory(task, messages) : task;
-      const userMessage: ModelMessage = { role: 'user', content: prompt };
-      const outcome = await callAgent(scope, {
-        node: target,
-        parentCallId: caller.callId,
-        toolCallId,
-        depth,
-        settings,
-        taskForEventLog: task,
-        messages: [...memory, userMessage],
-      });
-      storeMemory(scope, edge.id, settings.memory, [...memory, userMessage, ...outcome.responseMessages]);
-
-      if (outcome.status === 'error') return `サブエージェントの実行に失敗しました: ${outcome.error}`;
-      return outcome.output;
-    },
+    execute: ({ task }, { toolCallId, messages }) => call(task, toolCallId, messages),
   });
 }
 
-function withCallerHistory(task: string, callerMessages: ModelMessage[]): string {
-  return `<caller_conversation>\n${transcriptOf(callerMessages)}\n</caller_conversation>\n\n<task>\n${task}\n</task>`;
+/** サブエージェントに渡す、今回の依頼のメッセージ本文 */
+function promptOf(pass: CallSettings['pass'], task: string, callerMessages: ModelMessage[]): string {
+  const conversation = () => `<caller_conversation>\n${transcriptOf(callerMessages)}\n</caller_conversation>`;
+  switch (pass) {
+    case 'task':
+      return task;
+    case 'taskWithHistory':
+      return `${conversation()}\n\n<task>\n${task}\n</task>`;
+    case 'history':
+      return conversation();
+  }
 }
 
 /**

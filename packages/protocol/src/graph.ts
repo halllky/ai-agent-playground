@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { defaultModelOf, modelProviders } from './model.ts';
 
-/** サブエージェントに何を渡すか */
-export const passModes = ['task', 'taskWithHistory'] as const;
+/** サブエージェントに何を渡すか。history なら呼び出し元は指示を書かず、呼び出し元の会話だけを渡す */
+export const passModes = ['task', 'taskWithHistory', 'history'] as const;
 /** サブエージェントから何を返すか */
 export const returnModes = ['finalText', 'allSteps'] as const;
 /** サブエージェントの記憶をどこまで持ち越すか */
@@ -65,6 +65,15 @@ const judgeQuestionSchema = z.discriminatedUnion('type', [
 ]);
 /** 判定ノードに固定で定義する質問1つ */
 export type JudgeQuestion = z.infer<typeof judgeQuestionSchema>;
+
+const flowConditionSchema = z.object({
+  /** 判定ノードの質問の key */
+  questionKey: z.string(),
+  /** このいずれかの回答のときだけ流す。値の書き方は judgeAnswerOptions に従う */
+  anyOf: z.array(z.string()),
+});
+/** フローエッジに流す条件。判定ノードの回答で決まる */
+export type FlowCondition = z.infer<typeof flowConditionSchema>;
 
 /** グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない */
 export const graphNodeSchema = z.discriminatedUnion('kind', [
@@ -144,6 +153,8 @@ export type NodeKind = GraphNode['kind'];
 export type NodeOf<K extends NodeKind> = Extract<GraphNode, { kind: K }>;
 /** LLM を呼び出して動くノード */
 export type AgentNode = NodeOf<'mainAgent'> | NodeOf<'subAgent'>;
+/** フローの段になれるノード。フローエッジでつながると、メインエージェントより前に1回ずつ実行される */
+export type StageNode = NodeOf<'subAgent'> | NodeOf<'judge'> | NodeOf<'webSearch'>;
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [
@@ -171,10 +182,24 @@ export const graphEdgeSchema = z.discriminatedUnion('kind', [
     source: z.string(),
     target: z.string(),
   }),
+  /** フローの段の出力を、後段（別の段かメインエージェント）の入力として流す */
+  z.object({
+    id: z.string(),
+    kind: z.literal('flow'),
+    source: z.string(),
+    target: z.string(),
+    /** 送り元が判定ノードのとき、回答がこれを満たす場合だけ流す。null なら常に流す */
+    condition: flowConditionSchema.nullable(),
+  }),
 ]);
 export type GraphEdge = z.infer<typeof graphEdgeSchema>;
 /** 種別 K のエッジ */
 export type EdgeOf<K extends GraphEdge['kind']> = Extract<GraphEdge, { kind: K }>;
+/**
+ * エッジの系統。
+ * tools はエージェントに道具（サブエージェント・ファイル群・Web検索など）を持たせ、flow はノードの出力を次のノードへ流す
+ */
+export type EdgeLane = 'tools' | 'flow';
 
 /**
  * エージェント構成のグラフ全体。保存・実行の単位。
@@ -204,7 +229,7 @@ export function createNode<K extends NodeKind>(kind: K, id: string, position: Gr
   return nodeFactories[kind](id, position);
 }
 
-/** 既定の設定を持つ新しいエッジ。サブエージェント呼び出しなら呼び出し方をすべて呼び出し先の既定値に任せ、アクセスなら参照のみ */
+/** 既定の設定を持つ新しいエッジ。サブエージェント呼び出しなら呼び出し方をすべて呼び出し先の既定値に任せ、アクセスなら参照のみ、フローなら無条件 */
 export function createEdge<K extends GraphEdge['kind']>(kind: K, id: string, source: string, target: string): EdgeOf<K> {
   return edgeFactories[kind](id, source, target);
 }
@@ -230,17 +255,24 @@ export function isAgentNode(node: GraphNode): node is AgentNode {
   return node.kind === 'mainAgent' || node.kind === 'subAgent';
 }
 
+/** フローの段になれるノードか */
+export function isStageNode(node: GraphNode): node is StageNode {
+  return node.kind === 'subAgent' || node.kind === 'judge' || node.kind === 'webSearch';
+}
+
 /** メインエージェントが無い・複数あるグラフも保存はできるため、見つからなければ undefined、複数なら最初の1つ */
 export function findMainAgent(graph: GraphDefinition): NodeOf<'mainAgent'> | undefined {
   return graph.nodes.find((n): n is NodeOf<'mainAgent'> => n.kind === 'mainAgent');
 }
 
 /**
- * source から target へ張れるエッジの種類。張れない組み合わせなら undefined。
+ * source から target へ lane の系統で張れるエッジの種類。張れない組み合わせなら undefined。
  * ノード種別を増やしたときは、ここに接続規則を足す。
  */
-export function edgeKindBetween(source: GraphNode, target: GraphNode): GraphEdge['kind'] | undefined {
-  if (source.id === target.id || !isAgentNode(source)) return undefined;
+export function edgeKindBetween(source: GraphNode, target: GraphNode, lane: EdgeLane): GraphEdge['kind'] | undefined {
+  if (source.id === target.id) return undefined;
+  if (lane === 'flow') return isStageNode(source) && (isStageNode(target) || target.kind === 'mainAgent') ? 'flow' : undefined;
+  if (!isAgentNode(source)) return undefined;
   switch (target.kind) {
     case 'subAgent':
       return 'call';
@@ -252,6 +284,64 @@ export function edgeKindBetween(source: GraphNode, target: GraphNode): GraphEdge
       return 'use';
     default:
       return undefined;
+  }
+}
+
+/** 種別 kind のエッジの系統 */
+export function laneOf(kind: GraphEdge['kind']): EdgeLane {
+  return kind === 'flow' ? 'flow' : 'tools';
+}
+
+/**
+ * フローの段を実行順に並べる。
+ * 段になれるノードのうち、フローエッジでほかの段かメインエージェントにつながっているものが段になる。
+ * 前段がすべて終わってから後段を実行する順にする。循環していて順序が決まらなければ null
+ */
+export function flowStages(graph: GraphDefinition): StageNode[] | null {
+  const stages = new Map<string, StageNode>();
+  const flows: GraphEdge[] = [];
+  for (const edge of graph.edges) {
+    if (edge.kind !== 'flow') continue;
+    const source = graph.nodes.find((n) => n.id === edge.source);
+    const target = graph.nodes.find((n) => n.id === edge.target);
+    if (!source || !target || !isStageNode(source)) continue;
+    stages.set(source.id, source);
+    if (isStageNode(target)) {
+      stages.set(target.id, target);
+      flows.push(edge);
+    }
+  }
+
+  const pending = new Map([...stages.keys()].map((id) => [id, flows.filter((e) => e.target === id).length]));
+  const ordered: StageNode[] = [];
+  let ready = [...pending].filter(([, count]) => count === 0).map(([id]) => id);
+  while (ready.length > 0) {
+    const next: string[] = [];
+    for (const id of ready) {
+      ordered.push(stages.get(id)!);
+      for (const edge of flows.filter((e) => e.source === id)) {
+        const count = pending.get(edge.target)! - 1;
+        pending.set(edge.target, count);
+        if (count === 0) next.push(edge.target);
+      }
+    }
+    ready = next;
+  }
+  return ordered.length === stages.size ? ordered : null;
+}
+
+/** 判定ノードの質問1つについて、回答として決まりうる値とその表示名。フローエッジの条件はこの値で書く */
+export function judgeAnswerOptions(question: JudgeQuestion): { value: string; label: string }[] {
+  switch (question.type) {
+    case 'noul':
+      return [
+        { value: 'yes', label: question.yes ? `はい（${question.yes}）` : 'はい' },
+        { value: 'no', label: question.no ? `いいえ（${question.no}）` : 'いいえ' },
+      ];
+    case 'choice':
+      return question.choices.map((c) => ({ value: c.label, label: c.label }));
+    case 'score':
+      return question.levels.map((level, i) => ({ value: String(i), label: level ? `${i}（${level}）` : String(i) }));
   }
 }
 
@@ -306,6 +396,7 @@ const edgeFactories: { [K in GraphEdge['kind']]: (id: string, source: string, ta
   call: (id, source, target) => ({ id, kind: 'call', source, target, settings: {} }),
   access: (id, source, target) => ({ id, kind: 'access', source, target, permission: 'read' }),
   use: (id, source, target) => ({ id, kind: 'use', source, target }),
+  flow: (id, source, target) => ({ id, kind: 'flow', source, target, condition: null }),
 };
 
 function stripUndefined<T extends object>(obj: T): Partial<T> {

@@ -5,12 +5,12 @@ import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
 import { CodeBlock, CopyButton, Disclosure, ErrorNote, Pending } from '../ui/primitives';
 import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
-import { formatDuration, metricsOf, TotalsLine } from './totals';
+import { formatDuration, metricsOf, TotalsLine, type Totals } from './totals';
 
 /** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
   const events = useSession((s) => s.events[turn.id]);
-  const { root, notes } = useMemo(() => buildCallTree(events ?? []), [events]);
+  const { stages, root, totals, notes } = useMemo(() => buildCallTree(events ?? []), [events]);
   const turnError = finishErrorOf(events);
   const [editing, setEditing] = useState(false);
   return (
@@ -34,7 +34,17 @@ export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
       )}
       <div className="wrap-break-word">
         <Notes notes={notes} />
-        {root ? <CallBody call={root} graph={turn.graph} /> : turn.status === 'running' && <Pending />}
+        {root ? (
+          <CallBody call={root} graph={turn.graph} stages={stages} totals={totals} />
+        ) : (
+          // メインエージェントが始まる前（フローの段の実行中や、段の途中で中断したとき）は段だけを並べる
+          <>
+            {stages.map((stage) => (
+              <ToolCall key={stage.toolCallId} tool={stage} graph={turn.graph} />
+            ))}
+            {turn.status === 'running' && <Pending />}
+          </>
+        )}
         {turn.status === 'aborted' && <div className="text-sm text-muted">中断しました</div>}
         {turnError && !root?.error && <ErrorNote>{turnError}</ErrorNote>}
       </div>
@@ -115,17 +125,20 @@ function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boole
 /**
  * AI側の応答欄。LLM へのリクエストとツール呼び出しを時系列に並べる。
  * 応答が終わったら、それらは集計の折りたたみに収め、最後のステップのテキストだけを応答として見せる。
+ * stages はこの呼び出しより前に実行したフローの段で、内訳の先頭に並べる。totals は stages も含めた集計
  */
-function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
+function CallBody({ call, graph, stages = [], totals = call.totals }: { call: CallView; graph: GraphDefinition; stages?: ToolCallView[]; totals?: Totals }) {
   const last = call.steps.at(-1);
+  const stageEntries = stages.map((stage) => <ToolCall key={stage.toolCallId} tool={stage} graph={graph} />);
   return (
     <>
       {/* 応答待ち中 */}
       {call.status === 'running' && (
         <>
-          {call.totals.steps > 1 && (
-            <TotalsLine className="my-1 text-muted" totals={call.totals} />
+          {totals.steps > 1 && (
+            <TotalsLine className="my-1 text-muted" totals={totals} />
           )}
+          {stageEntries}
           {call.steps.map((step) => (
             <Step key={step.index} callId={call.callId} step={step} withText graph={graph} />
           ))}
@@ -136,9 +149,10 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
       {/* 応答完了時 */}
       {last && call.status !== 'running' && (
         <>
-          <Disclosure className="my-1" summary={<TotalsLine totals={call.totals} />}>
+          <Disclosure className="my-1" summary={<TotalsLine totals={totals} />}>
             {() => (
               <div className={nested}>
+                {stageEntries}
                 {call.steps.map((step) => (
                   <Step key={step.index} callId={call.callId} step={step} withText={step !== last} graph={graph} />
                 ))}
@@ -207,7 +221,12 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
   if (child) {
     const label = (
       <>
-        {nodeTitle(graph, child.nodeId)}: <span className="text-ink">{child.task}</span>
+        {nodeTitle(graph, child.nodeId)}
+        {child.task && (
+          <>
+            : <span className="text-ink">{excerpt(child.task)}</span>
+          </>
+        )}
       </>
     );
     return (
@@ -293,6 +312,12 @@ const statusDotColors: Record<RunStatus, string> = {
   error: 'bg-danger',
   aborted: 'bg-warn',
 };
+
+/** 長い指示を1行に収まる程度に切り詰める。フローの段では前段の出力がそのまま指示になり長くなりやすい */
+function excerpt(text: string): string {
+  const firstLine = text.split('\n', 1)[0];
+  return firstLine.length > 80 || firstLine !== text ? `${firstLine.slice(0, 80)}…` : text;
+}
 
 /** 呼び出しの応答として見せたテキスト。ツールコールやサブエージェントの中身は含めない */
 function responseText(call: CallView): string {

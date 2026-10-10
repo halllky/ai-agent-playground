@@ -11,6 +11,7 @@ import {
   ReactFlow,
   useReactFlow,
   ReactFlowProvider,
+  type Connection,
   type Edge,
   type Node,
   type NodeProps,
@@ -20,9 +21,11 @@ import {
   createNode,
   diagnoseGraph,
   edgeKindBetween,
+  laneOf,
   removeEdges,
   removeNodes,
   type GraphDefinition,
+  type GraphEdge,
   type GraphNode,
   type GraphWarning,
   type NodeKind,
@@ -117,18 +120,21 @@ function Canvas(props: {
       data: { node, warnings: warningsFor(warnings, { nodeId: node.id }) },
     }),
   );
-  const edges = definition.edges.map(
-    (edge): Edge => ({
+  const edges = definition.edges.map((edge): Edge => {
+    const lane = laneOf(edge.kind);
+    return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
+      sourceHandle: lane,
+      targetHandle: lane,
       label: edgeKindView(edge).label(edge) || undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
       // React Flow が選択中などに付ける線の色より、警告の色を優先する
-      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? '[&_path]:stroke-warn!' : undefined,
-    }),
-  );
+      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? '[&_path]:stroke-warn!' : lane === 'flow' ? '[&_path]:stroke-accent' : undefined,
+    };
+  });
 
   const addNode = (kind: NodeKind) => {
     const id = crypto.randomUUID();
@@ -180,17 +186,10 @@ function Canvas(props: {
           const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
           if (removed.length > 0) updateGraphDefinition((d) => removeEdges(d, removed));
         }}
-        isValidConnection={(connection) => {
-          const source = definition.nodes.find((n) => n.id === connection.source);
-          const target = definition.nodes.find((n) => n.id === connection.target);
-          const duplicate = definition.edges.some((e) => e.source === connection.source && e.target === connection.target);
-          return !!source && !!target && !duplicate && edgeKindBetween(source, target) !== undefined;
-        }}
+        isValidConnection={(connection) => connectionKind(definition, connection) !== undefined}
         onConnect={(connection) => {
           updateGraphDefinition((d) => {
-            const source = d.nodes.find((n) => n.id === connection.source);
-            const target = d.nodes.find((n) => n.id === connection.target);
-            const kind = source && target && edgeKindBetween(source, target);
+            const kind = connectionKind(d, connection);
             if (!kind) return d;
             return { ...d, edges: [...d.edges, createEdge(kind, crypto.randomUUID(), connection.source, connection.target)] };
           });
@@ -208,6 +207,20 @@ function Canvas(props: {
       </ReactFlow>
     </div>
   );
+}
+
+/**
+ * 接続口どうしをつないだときにできるエッジの種類。つなげない、または同じ種類のエッジが既にあれば undefined。
+ * 接続口の id はエッジの系統（tools / flow）で、系統の違う接続口どうしはつなげない
+ */
+function connectionKind(definition: GraphDefinition, connection: Connection | Edge): GraphEdge['kind'] | undefined {
+  const lane = connection.sourceHandle === 'flow' ? 'flow' : 'tools';
+  if ((connection.targetHandle ?? 'tools') !== lane) return undefined;
+  const source = definition.nodes.find((n) => n.id === connection.source);
+  const target = definition.nodes.find((n) => n.id === connection.target);
+  const kind = source && target ? edgeKindBetween(source, target, lane) : undefined;
+  const duplicate = definition.edges.some((e) => e.source === connection.source && e.target === connection.target && e.kind === kind);
+  return duplicate ? undefined : kind;
 }
 
 /**
@@ -231,7 +244,8 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
         selected ? 'border-accent ring-1 ring-accent' : ''
       }`}
     >
-      {view.acceptsIncoming && <Handle type="target" position={Position.Top} />}
+      {view.acceptsIncoming && <Handle id="tools" type="target" position={Position.Top} />}
+      {view.flowIn && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
       <div className="text-2xs text-muted">{view.label}</div>
       <div className="font-semibold">{view.title(data.node)}</div>
       <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>
@@ -240,10 +254,14 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
           ⚠ {data.warnings.length}
         </div>
       )}
-      {view.emitsOutgoing && <Handle type="source" position={Position.Bottom} />}
+      {view.emitsOutgoing && <Handle id="tools" type="source" position={Position.Bottom} />}
+      {view.flowOut && <Handle id="flow" type="source" position={Position.Right} className={flowHandle} />}
     </div>
   );
 }
+
+/** フローの接続口。道具の接続口と見分けられるよう色を付ける */
+const flowHandle = 'bg-accent!';
 
 /** 選択中の要素の設定。読み取り専用なら入力欄を無効にして表示だけする */
 function Inspector(props: {
@@ -294,6 +312,7 @@ function Inspector(props: {
         <WarningList messages={warningsFor(warnings, { edgeId: edge.id })} />
         <view.Inspector
           edge={edge}
+          source={definition.nodes.find((n) => n.id === edge.source)}
           target={definition.nodes.find((n) => n.id === edge.target)}
           onChange={(changed) => updateGraphDefinition((d) => ({ ...d, edges: d.edges.map((e) => (e.id === changed.id ? changed : e)) }))}
         />

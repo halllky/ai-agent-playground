@@ -62,6 +62,28 @@ export function SelectField<T extends string>(props: {
   );
 }
 
+/** options から複数選ぶ入力。values の並びは options の順にそろえる */
+export function ChecklistField<T extends string>(props: {
+  label: string;
+  values: readonly T[];
+  options: readonly { value: T; label: string }[];
+  onChange: (values: T[]) => void;
+}) {
+  const toggle = (value: T, checked: boolean) =>
+    props.onChange(props.options.map((o) => o.value).filter((v) => (v === value ? checked : props.values.includes(v))));
+  return (
+    <fieldset className="mb-2 flex flex-col gap-0.5">
+      <legend className={`${fieldNote} mb-0.5`}>{props.label}</legend>
+      {props.options.map((o) => (
+        <label key={o.value} className="flex items-center gap-1.5">
+          <input type="checkbox" checked={props.values.includes(o.value)} onChange={(e) => toggle(o.value, e.target.checked)} />
+          {o.label}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
 /** provider のモデル一覧から選ぶ。一覧にない ID も入力できる */
 export function ModelField(props: { provider: ModelProvider; value: string; onChange: (value: string) => void }) {
   const listId = useId();

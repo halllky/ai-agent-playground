@@ -3,6 +3,7 @@ import { asc, eq, inArray, max } from 'drizzle-orm';
 import { findMainAgent, resourceSpecOf, type GraphDefinition, type RunEvent, type RunEventBody } from 'protocol';
 import { db, lineageOf, runEvents, turns } from '../db/index.ts';
 import { callAgent, type AgentCallOutcome, type CallHeader, type RunScope } from './agentCall.ts';
+import { runFlow } from './flow.ts';
 import { Volume } from '../volume/index.ts';
 import type { TurnMemory } from './memory.ts';
 
@@ -96,14 +97,20 @@ class Run implements RunScope {
 
     this.seedResources(turnHeader);
     try {
+      const history = conversationBefore(parentTurnId);
+      const prompt = await runFlow(this, turnHeader, main, { history, userText });
+      if (this.signal.aborted) {
+        this.finish(turnHeader, 'aborted', [], null);
+        return;
+      }
       const outcome = await callAgent(this, {
         node: main,
         parentCallId: null,
         toolCallId: null,
         depth: 0,
         settings: null,
-        taskForEventLog: userText,
-        messages: [...conversationBefore(parentTurnId), { role: 'user', content: userText }],
+        taskForEventLog: prompt,
+        messages: [...history, { role: 'user', content: prompt }],
       });
       this.finish(turnHeader, outcome.status, outcome.responseMessages, outcome.error);
     } catch (e) {

@@ -2,7 +2,18 @@ import { randomUUID } from 'node:crypto';
 import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
-import { createDefaultGraph, findMainAgent, type AccessPermission, type CallSettings, type GraphDefinition, type ModelProvider, type RunEvent, type RunEventOf } from 'protocol';
+import {
+  createDefaultGraph,
+  findMainAgent,
+  type AccessPermission,
+  type CallSettings,
+  type GraphDefinition,
+  type JudgeQuestion,
+  type ModelProvider,
+  type NodeOf,
+  type RunEvent,
+  type RunEventOf,
+} from 'protocol';
 import { db, graphs, sessions, turns } from '../db/index.ts';
 import { abortTurn, followTurn, startTurn } from './index.ts';
 
@@ -248,21 +259,13 @@ describe('ターン実行', () => {
         : streamOf(toolCallParts([{ name: 'triage', input: { state: userTextOf(prompt) } }]));
     });
     const graph = graphWithMain();
-    graph.nodes.push({
-      id: 'triage',
-      kind: 'judge',
-      position: { x: 0, y: 0 },
-      config: {
-        name: 'triage',
-        description: '',
-        model: '',
-        questions: [
-          { key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '急がない' },
-          { key: 'kind', type: 'choice', instructions: '種類', choices: [{ label: 'bug', description: '' }, { label: 'question', description: '質問' }] },
-          { key: 'severity', type: 'score', instructions: '深刻度', levels: ['軽微', '', '致命的'] },
-        ],
-      },
-    });
+    graph.nodes.push(
+      judgeNodeOf([
+        { key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '急がない' },
+        { key: 'kind', type: 'choice', instructions: '種類', choices: [{ label: 'bug', description: '' }, { label: 'question', description: '質問' }] },
+        { key: 'severity', type: 'score', instructions: '深刻度', levels: ['軽微', '', '致命的'] },
+      ]),
+    );
     graph.edges.push({ id: 'main-triage', kind: 'use', source: 'main', target: 'triage' });
     judgeRequests.length = 0;
 
@@ -308,6 +311,75 @@ describe('ターン実行', () => {
     expect(JSON.stringify(ofType(judged, 'tool.result')[0])).not.toContain('急ぎか');
     expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
   });
+
+  it('親の履歴のみを渡す呼び出しでは、ツールに指示の引数を持たせず、呼び出し元の会話だけを渡す', async () => {
+    let inputSchema: unknown;
+    let subPrompt = '';
+    scripts.set('main', (prompt, options) => {
+      const tool = options.tools?.find((t) => t.name === 'researcher');
+      inputSchema = tool?.type === 'function' ? tool.inputSchema : undefined;
+      return lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: {} }]));
+    });
+    scripts.set('sub', (prompt) => {
+      subPrompt = userTextOf(prompt);
+      return streamOf(textParts('読みました'));
+    });
+
+    const events = await runTurn(graphOf({ pass: 'history' }), '旅行の計画を立てたい');
+
+    expect(inputSchema).toMatchObject({ properties: {} });
+    expect(subPrompt).toBe('<caller_conversation>\n[user] 旅行の計画を立てたい\n</caller_conversation>');
+    expect(ofType(events, 'call.start').find((e) => e.nodeId === 'researcher')).toMatchObject({ task: '' });
+  });
+
+  it('フローの段を流れの順に実行してメインエージェントに出力を渡し、条件を満たさない段は飛ばす', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'test');
+    const mainPrompts: string[] = [];
+    const subPrompts: string[] = [];
+    scripts.set('main', (prompt) => {
+      mainPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('回答'));
+    });
+    scripts.set('sub', (prompt) => {
+      subPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('集めた情報'));
+    });
+    // 判定 →（条件を満たせば）調べもの → メイン
+    const flowGraphOf = (anyOf: string[]) => {
+      const graph = graphWithMain();
+      graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), researcherOf({}));
+      graph.edges.push(
+        { id: 'triage-researcher', kind: 'flow', source: 'triage', target: 'researcher', condition: { questionKey: 'urgent', anyOf } },
+        { id: 'researcher-main', kind: 'flow', source: 'researcher', target: 'main', condition: null },
+      );
+      return graph;
+    };
+    judgeRequests.length = 0;
+
+    const passed = await runTurn(flowGraphOf(['yes']), '急いで調べて');
+    const skipped = await runTurn(flowGraphOf(['no']), '急いで調べて');
+    vi.unstubAllEnvs();
+
+    expect(judgeRequests).toMatchObject([{ state: '急いで調べて' }, { state: '急いで調べて' }]);
+    expect(subPrompts).toHaveLength(1);
+    expect(JSON.parse(subPrompts[0])).toMatchObject({ urgent: { probabilityOfYes: 0.9 } });
+    // 流れてきた出力は、ユーザーの発言と取り違えないよう別のタグに入れる
+    expect(mainPrompts[0]).toMatch(
+      /^<user_message>\n急いで調べて\n<\/user_message>\n<preprocessing_results>\n[\s\S]*<researcher>\n集めた情報\n<\/researcher>\n<\/preprocessing_results>$/,
+    );
+    expect(mainPrompts[1]).toBe('急いで調べて');
+
+    const turnId = passed[0].turnId;
+    expect(ofType(passed, 'tool.call').map((e) => [e.callId, e.toolName])).toEqual([
+      [turnId, 'triage'],
+      [turnId, 'researcher'],
+    ]);
+    expect(ofType(passed, 'call.start').map((e) => [e.nodeId, e.parentCallId])).toEqual([
+      ['researcher', turnId],
+      ['main', null],
+    ]);
+    expect(ofType(skipped, 'log').some((e) => e.message.includes('researcher には前段から何も流れてこなかった'))).toBe(true);
+  });
 });
 
 /** モデル main のメインエージェントだけを持つグラフ */
@@ -317,24 +389,35 @@ function graphWithMain(): GraphDefinition {
   return graph;
 }
 
-function graphOf(subDefaults: Pick<CallSettings, 'memory'>, subProvider: ModelProvider = 'openrouter'): GraphDefinition {
+/** メインエージェントがサブエージェント researcher を呼び出すグラフ */
+function graphOf(subDefaults: Partial<CallSettings>, subProvider: ModelProvider = 'openrouter'): GraphDefinition {
   const graph = graphWithMain();
-  graph.nodes.push({
+  graph.nodes.push(researcherOf(subDefaults, subProvider));
+  graph.edges.push({ id: 'main-researcher', kind: 'call', source: 'main', target: 'researcher', settings: {} });
+  return graph;
+}
+
+/** モデル sub のサブエージェント researcher。呼び出しの既定値は指定がなければ task / finalText / fresh */
+function researcherOf(callDefaults: Partial<CallSettings>, provider: ModelProvider = 'openrouter'): NodeOf<'subAgent'> {
+  return {
     id: 'researcher',
     kind: 'subAgent',
     position: { x: 0, y: 0 },
     config: {
       name: 'researcher',
       description: '調べもの担当',
-      provider: subProvider,
+      provider,
       model: 'sub',
       systemPrompt: 'You research.',
       maxSteps: 5,
-      callDefaults: { pass: 'task', returns: 'finalText', ...subDefaults },
+      callDefaults: { pass: 'task', returns: 'finalText', memory: 'fresh', ...callDefaults },
     },
-  });
-  graph.edges.push({ id: 'main-researcher', kind: 'call', source: 'main', target: 'researcher', settings: {} });
-  return graph;
+  };
+}
+
+/** 判定ノード triage */
+function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
+  return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', description: '', model: '', questions } };
 }
 
 function workfolderGraphOf(permission: AccessPermission): GraphDefinition {

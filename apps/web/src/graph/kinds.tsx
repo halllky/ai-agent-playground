@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import {
   accessPermissions,
   defaultModelOf,
+  judgeAnswerOptions,
   memoryModes,
   modelProviderLabels,
   modelProviders,
@@ -12,13 +13,14 @@ import {
   type AgentNode,
   type CallSettings,
   type EdgeOf,
+  type FlowCondition,
   type GraphDefinition,
   type GraphEdge,
   type GraphNode,
   type NodeKind,
   type NodeOf,
 } from 'protocol';
-import { Hint, JudgeQuestionsField, ModelField, NumberField, ResourceFilesField, SectionHeading, SelectField, TextField } from './fields.tsx';
+import { ChecklistField, Hint, JudgeQuestionsField, ModelField, NumberField, ResourceFilesField, SectionHeading, SelectField, TextField } from './fields.tsx';
 
 /**
  * ノード種別ごとの画面上の振る舞い。
@@ -31,8 +33,14 @@ type NodeKindView<K extends NodeKind> = {
   title(node: NodeOf<K>): string;
   /** ノード本体に出す要約 */
   summary(node: NodeOf<K>): string;
+  /** 道具として使われる側の接続口（上）を持つか */
   acceptsIncoming: boolean;
+  /** 道具を使う側の接続口（下）を持つか */
   emitsOutgoing: boolean;
+  /** フローの入力の接続口（左）を持つか */
+  flowIn: boolean;
+  /** フローの出力の接続口（右）を持つか */
+  flowOut: boolean;
   /**
    * グラフに常に1個だけ置く種別か。そうなら削除できない。
    * 何かの間違いで欠けたグラフや、この種別が増える前に作ったグラフのために、グラフに無いときはパレットから追加できる
@@ -45,7 +53,7 @@ type NodeKindView<K extends NodeKind> = {
 type EdgeKindView<K extends GraphEdge['kind']> = {
   /** キャンバス上のエッジに添える説明。空文字なら何も出さない */
   label(edge: EdgeOf<K>): string;
-  Inspector(props: { edge: EdgeOf<K>; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
+  Inspector(props: { edge: EdgeOf<K>; source: GraphNode | undefined; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
 };
 
 /** 全ノード種別の画面上の振る舞い */
@@ -56,6 +64,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: agentSummary,
     acceptsIncoming: false,
     emitsOutgoing: true,
+    flowIn: true,
+    flowOut: false,
     single: true,
     Inspector: ({ node, onChange }) => <AgentFields node={node} onChange={onChange} />,
   },
@@ -65,6 +75,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: agentSummary,
     acceptsIncoming: true,
     emitsOutgoing: true,
+    flowIn: true,
+    flowOut: true,
     single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'subAgent'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
@@ -75,6 +87,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
           <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
           <AgentFields node={node} onChange={onChange} />
           <SectionHeading>呼び出しの既定値</SectionHeading>
+          <Hint>フローの段として実行するときはこの設定で呼ばれ、流れてきた入力がタスク、今回の発言までの会話が親の履歴になります。</Hint>
           <SelectField label="渡すもの" value={node.config.callDefaults.pass} options={passOptions} onChange={(pass) => setDefault({ pass })} />
           <SelectField label="返すもの" value={node.config.callDefaults.returns} options={returnOptions} onChange={(returns) => setDefault({ returns })} />
           <SelectField label="記憶" value={node.config.callDefaults.memory} options={memoryOptions} onChange={(memory) => setDefault({ memory })} />
@@ -88,6 +101,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: () => 'Markdown / JSON',
     acceptsIncoming: true,
     emitsOutgoing: false,
+    flowIn: false,
+    flowOut: false,
     single: true,
     Inspector: () => (
       <Hint>
@@ -102,6 +117,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => `JSON ${node.config.files.length} ファイル`,
     acceptsIncoming: true,
     emitsOutgoing: false,
+    flowIn: false,
+    flowOut: false,
     single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'resource'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
@@ -122,6 +139,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: () => 'Tavily',
     acceptsIncoming: true,
     emitsOutgoing: false,
+    flowIn: true,
+    flowOut: true,
     single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'webSearch'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
@@ -140,6 +159,8 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => `質問 ${node.config.questions.length} 件`,
     acceptsIncoming: true,
     emitsOutgoing: false,
+    flowIn: true,
+    flowOut: true,
     single: false,
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'judge'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
@@ -210,9 +231,23 @@ const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
     label: () => '',
     Inspector: () => <Hint>接続先をツールとして使えるようにします。設定はありません。</Hint>,
   },
+  flow: {
+    label: (edge) => (edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : ''),
+    Inspector: ({ edge, source, onChange }) => (
+      <>
+        <Hint>
+          送り元の出力を、送り先の入力として流します。フローの段はメインエージェントより前に、流れの順に1回ずつ実行されます。
+          前段を持たない段は今回のユーザーの発言を受け取ります。サブエージェントは、ノードの呼び出しの既定値で呼ばれます。
+        </Hint>
+        {source?.kind === 'judge' && (
+          <FlowConditionFields questions={source.config.questions} condition={edge.condition} onChange={(condition) => onChange({ ...edge, condition })} />
+        )}
+      </>
+    ),
+  },
 };
 
-const passLabels: Record<CallSettings['pass'], string> = { task: 'タスクのみ', taskWithHistory: '親の履歴も渡す' };
+const passLabels: Record<CallSettings['pass'], string> = { task: 'タスクのみ', taskWithHistory: '親の履歴も渡す', history: '親の履歴のみ' };
 const returnLabels: Record<CallSettings['returns'], string> = { finalText: '最終テキスト', allSteps: '全ステップ' };
 const memoryLabels: Record<CallSettings['memory'], string> = { fresh: '毎回まっさら', turn: 'ターン内で継続', session: 'セッションで継続' };
 const permissionLabels: Record<AccessPermission, string> = { read: '参照', write: '編集' };
@@ -242,6 +277,35 @@ function AgentFields<N extends AgentNode>({ node, onChange }: { node: N; onChang
       <ModelField provider={node.config.provider} value={node.config.model} onChange={(model) => set({ model } as Partial<N['config']>)} />
       <TextField label="システムプロンプト" multiline value={node.config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt } as Partial<N['config']>)} />
       <NumberField label="最大ステップ数" min={1} value={node.config.maxSteps} onChange={(maxSteps) => set({ maxSteps } as Partial<N['config']>)} />
+    </>
+  );
+}
+
+/** 判定ノードから出るフローの条件。質問を選ぶと、まずその質問の最初の回答だけを流す条件にする */
+function FlowConditionFields(props: {
+  questions: NodeOf<'judge'>['config']['questions'];
+  condition: FlowCondition | null;
+  onChange: (condition: FlowCondition | null) => void;
+}) {
+  const { questions, condition, onChange } = props;
+  const always = '__always__';
+  const question = condition && questions.find((q) => q.key === condition.questionKey);
+  const questionOptions = [{ value: always, label: '常に流す' }, ...questions.map((q) => ({ value: q.key, label: q.key }))];
+  const selectQuestion = (key: string) => {
+    const selected = questions.find((q) => q.key === key);
+    onChange(selected ? { questionKey: key, anyOf: judgeAnswerOptions(selected).slice(0, 1).map((o) => o.value) } : null);
+  };
+  return (
+    <>
+      <SelectField label="流す条件" value={condition?.questionKey ?? always} options={questionOptions} onChange={selectQuestion} />
+      {condition && question && (
+        <ChecklistField
+          label="この回答のときだけ流す"
+          options={judgeAnswerOptions(question)}
+          values={condition.anyOf}
+          onChange={(anyOf) => onChange({ ...condition, anyOf })}
+        />
+      )}
     </>
   );
 }
