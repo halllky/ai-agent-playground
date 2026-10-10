@@ -103,6 +103,22 @@ export function createEdge<K extends GraphEdge['kind']>(kind: K, id: string, sou
   return edgeFactories[kind](id, source, target);
 }
 
+/** nodeIds のノードと、それらにつながるエッジを取り除いたグラフ */
+export function removeNodes(graph: GraphDefinition, nodeIds: Iterable<string>): GraphDefinition {
+  const removed = new Set(nodeIds);
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((n) => !removed.has(n.id)),
+    edges: graph.edges.filter((e) => !removed.has(e.source) && !removed.has(e.target)),
+  };
+}
+
+/** edgeIds のエッジを取り除いたグラフ */
+export function removeEdges(graph: GraphDefinition, edgeIds: Iterable<string>): GraphDefinition {
+  const removed = new Set(edgeIds);
+  return { ...graph, edges: graph.edges.filter((e) => !removed.has(e.id)) };
+}
+
 /** メインエージェントが無い・複数あるグラフも保存はできるため、見つからなければ undefined、複数なら最初の1つ */
 export function findMainAgent(graph: GraphDefinition): NodeOf<'mainAgent'> | undefined {
   return graph.nodes.find((n): n is NodeOf<'mainAgent'> => n.kind === 'mainAgent');

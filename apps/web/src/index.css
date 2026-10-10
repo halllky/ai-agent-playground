@@ -209,6 +209,17 @@ pre.json {
   font-size: 13px;
 }
 
+.inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.inspector-header h3 {
+  margin: 0;
+}
+
 .inspector h4 {
   margin: 12px 0 4px;
   font-size: 12px;
@@ -261,16 +272,37 @@ pre.json {
 }
 
 .message {
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
 .message.user {
   margin-left: 15%;
-  margin-bottom: 8px;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--user-bubble);
+  white-space: pre-wrap;
+}
+
+.message-actions {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0 8px;
+  opacity: 0;
+}
+
+.message-actions.user {
+  justify-content: flex-end;
+}
+
+.turn:hover .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+}
+
+.copy-button {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--fg-sub);
 }
 
 .message.assistant .text {
@@ -279,6 +311,87 @@ pre.json {
 
 .text.live {
   color: var(--fg-sub);
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre,
+.markdown blockquote,
+.markdown table {
+  margin: 6px 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 12px 0 6px;
+}
+
+.markdown h1 {
+  font-size: 18px;
+}
+
+.markdown h2 {
+  font-size: 16px;
+}
+
+.markdown h3,
+.markdown h4 {
+  font-size: 14px;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 20px;
+}
+
+.markdown code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg-sub);
+  font-size: 12px;
+}
+
+.markdown pre {
+  padding: 8px;
+  overflow-x: auto;
+  border-radius: 4px;
+  background: var(--bg-sub);
+}
+
+.markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.markdown blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-sub);
+}
+
+.markdown table {
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+}
+
+.markdown a {
+  color: var(--accent);
 }
 
 .text.aborted::after {

@@ -1,8 +1,6 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { Allotment } from 'allotment';
 import {
-  applyEdgeChanges,
-  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -20,6 +18,8 @@ import {
   createNode,
   diagnoseGraph,
   edgeKindBetween,
+  removeEdges,
+  removeNodes,
   type GraphDefinition,
   type GraphNode,
   type GraphWarning,
@@ -46,7 +46,7 @@ export function GraphPanel() {
         </ReactFlowProvider>
       </Allotment.Pane>
       <Allotment.Pane minSize={80}>
-        <Inspector definition={graph.definition} warnings={warnings} selection={selection} />
+        <Inspector definition={graph.definition} warnings={warnings} selection={selection} onSelect={setSelection} />
       </Allotment.Pane>
     </Allotment>
   );
@@ -56,6 +56,8 @@ type Selection = { nodeId: string } | { edgeId: string } | null;
 type FlowNode = Node<{ node: GraphNode; warnings: string[] }, 'graphNode'>;
 
 const nodeTypes = { graphNode: GraphNodeView };
+// React Flow の既定では Backspace でしか消えず、Delete キーが効かないため両方を割り当てる
+const deleteKeys = ['Delete', 'Backspace'];
 
 function Canvas(props: {
   definition: GraphDefinition;
@@ -114,6 +116,7 @@ function Canvas(props: {
         nodeTypes={nodeTypes}
         colorMode="system"
         fitView
+        deleteKeyCode={deleteKeys}
         onNodesChange={(changes) => {
           for (const c of changes) {
             if (c.type === 'select') onSelect(selectionAfter(c.id, c.selected, (id) => ({ nodeId: id })));
@@ -122,23 +125,19 @@ function Canvas(props: {
               setMeasured((m) => ({ ...m, [c.id]: dimensions }));
             }
           }
-          const next = applyNodeChanges(changes, nodes);
-          if (!changes.some((c) => c.type === 'position' || c.type === 'remove')) return;
-          const ids = new Set(next.map((n) => n.id));
-          updateGraphDefinition((d) => ({
-            ...d,
-            nodes: next.map((n) => ({ ...n.data.node, position: n.position })),
-            edges: d.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
-          }));
+          const positions = new Map(changes.flatMap((c) => (c.type === 'position' && c.position ? [[c.id, c.position] as const] : [])));
+          if (positions.size > 0) {
+            updateGraphDefinition((d) => ({ ...d, nodes: d.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })) }));
+          }
+          const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
+          if (removed.length > 0) updateGraphDefinition((d) => removeNodes(d, removed));
         }}
         onEdgesChange={(changes) => {
           for (const c of changes) {
             if (c.type === 'select') onSelect(selectionAfter(c.id, c.selected, (id) => ({ edgeId: id })));
           }
-          const next = applyEdgeChanges(changes, edges);
-          if (!changes.some((c) => c.type === 'remove')) return;
-          const ids = new Set(next.map((e) => e.id));
-          updateGraphDefinition((d) => ({ ...d, edges: d.edges.filter((e) => ids.has(e.id)) }));
+          const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
+          if (removed.length > 0) updateGraphDefinition((d) => removeEdges(d, removed));
         }}
         isValidConnection={(connection) => {
           const source = definition.nodes.find((n) => n.id === connection.source);
@@ -194,7 +193,13 @@ function GraphNodeView({ data }: NodeProps<FlowNode>) {
   );
 }
 
-function Inspector({ definition, warnings, selection }: { definition: GraphDefinition; warnings: GraphWarning[]; selection: Selection }) {
+function Inspector(props: {
+  definition: GraphDefinition;
+  warnings: GraphWarning[];
+  selection: Selection;
+  onSelect: Dispatch<SetStateAction<Selection>>;
+}) {
+  const { definition, warnings, selection, onSelect } = props;
   const node = selection && 'nodeId' in selection ? definition.nodes.find((n) => n.id === selection.nodeId) : undefined;
   const edge = selection && 'edgeId' in selection ? definition.edges.find((e) => e.id === selection.edgeId) : undefined;
 
@@ -202,7 +207,13 @@ function Inspector({ definition, warnings, selection }: { definition: GraphDefin
     const view = nodeKindView(node);
     return (
       <div className="inspector">
-        <h3>{view.label}</h3>
+        <InspectorHeader
+          title={view.label}
+          onDelete={() => {
+            updateGraphDefinition((d) => removeNodes(d, [node.id]));
+            onSelect(null);
+          }}
+        />
         <WarningList messages={warningsFor(warnings, { nodeId: node.id })} />
         <view.Inspector
           node={node}
@@ -215,7 +226,13 @@ function Inspector({ definition, warnings, selection }: { definition: GraphDefin
     const view = edgeKindView(edge);
     return (
       <div className="inspector">
-        <h3>エッジ</h3>
+        <InspectorHeader
+          title="エッジ"
+          onDelete={() => {
+            updateGraphDefinition((d) => removeEdges(d, [edge.id]));
+            onSelect(null);
+          }}
+        />
         <WarningList messages={warningsFor(warnings, { edgeId: edge.id })} />
         <view.Inspector
           edge={edge}
@@ -235,7 +252,18 @@ function Inspector({ definition, warnings, selection }: { definition: GraphDefin
         value={definition.settings.maxCallDepth}
         onChange={(maxCallDepth) => updateGraphDefinition((d) => ({ ...d, settings: { ...d.settings, maxCallDepth } }))}
       />
-      <p className="hint">ノードやエッジを選ぶと設定を編集できます。Delete / Backspace で削除。</p>
+      <p className="hint">ノードやエッジを選ぶと設定の編集や削除ができます。選んで Delete / Backspace キーでも削除できます。</p>
+    </div>
+  );
+}
+
+function InspectorHeader({ title, onDelete }: { title: string; onDelete: () => void }) {
+  return (
+    <div className="inspector-header">
+      <h3>{title}</h3>
+      <button className="danger" onClick={onDelete}>
+        削除
+      </button>
     </div>
   );
 }
