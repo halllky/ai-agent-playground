@@ -1,11 +1,12 @@
-import type { LanguageModel, StepResult, ToolSet } from 'ai';
+import type { LanguageModelV3 } from '@ai-sdk/provider';
+import type { StepResult, ToolSet } from 'ai';
 import type { ModelInfo, ModelProvider } from 'protocol';
 import { gemini } from './gemini.ts';
 import { openrouter } from './openrouter.ts';
 
 /** プロバイダ1つ分の実装。llm/ の中だけで使う */
 export type ProviderClient = {
-  languageModel(modelId: string): LanguageModel;
+  languageModel(modelId: string): LanguageModelV3;
   /** 取得に失敗したら例外を投げる */
   fetchCatalog(): Promise<ModelInfo[]>;
   /** レスポンスに含まれていた利用料金。含まれていなければ null */
@@ -15,7 +16,7 @@ export type ProviderClient = {
 const clients: Record<ModelProvider, ProviderClient> = { openrouter, gemini };
 
 /** provider のモデルを AI SDK から呼び出せる形にする。API キーやモデル ID の誤りは呼び出すまで分からない */
-export function languageModel(provider: ModelProvider, modelId: string): LanguageModel {
+export function languageModel(provider: ModelProvider, modelId: string): LanguageModelV3 {
   return clients[provider].languageModel(modelId);
 }
 

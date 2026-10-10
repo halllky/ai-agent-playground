@@ -33,7 +33,10 @@ export type RunEventBody =
       settings: CallSettings | null;
       task: string;
     }
+  /** LLM への1リクエストの開始。そのステップのテキスト・ツールコールはこの後、step.finish までに届く */
+  | { type: 'step.start'; index: number }
   | { type: 'text.delta'; text: string }
+  /** ステップの終了。ツールの実行も終わった後に届く */
   | { type: 'step.finish'; step: StepRecord }
   | { type: 'tool.call'; toolCallId: string; toolName: string; input: unknown }
   | { type: 'tool.result'; toolCallId: string; toolName: string; output: unknown; isError: boolean }
@@ -59,6 +62,7 @@ export type StepRecord = {
   usage: { inputTokens: number; outputTokens: number };
   /** USD。プロバイダから得られず料金表にもないときは null */
   cost: number | null;
+  /** LLM に要求してから応答を受け取り終えるまで。ツールの実行時間は含まない */
   durationMs: number;
   /** プロバイダへ送ったリクエスト本文（システムプロンプト・履歴・ツール定義を含む） */
   request: unknown;

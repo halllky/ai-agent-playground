@@ -68,6 +68,33 @@ describe('ターン実行', () => {
     expect(ofType(events, 'step.finish').at(-1)?.step.text).toBe('まとめました');
   });
 
+  it('ステップのイベントはツールコールを挟んで順に届き、所要時間にツールの実行を含めない', async () => {
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt)
+        ? streamOf(textParts('まとめました'))
+        : streamOf(toolCallParts([{ name: 'researcher', input: { task: 'A' } }, { name: 'researcher', input: { task: 'B' } }])),
+    );
+    scripts.set('sub', () => delayedStream(textParts('調査結果'), () => {}));
+
+    const events = await runTurn(graphOf({ memory: 'fresh' }), 'こんにちは');
+
+    const mainCallId = ofType(events, 'call.start').find((e) => e.nodeId === 'main')!.callId;
+    const mainEvents = events.filter((e) => e.callId === mainCallId);
+    expect(mainEvents.filter((e) => e.type.startsWith('step.') || e.type.startsWith('tool.')).map((e) => e.type)).toEqual([
+      'step.start',
+      'tool.call',
+      'tool.call',
+      'tool.result',
+      'tool.result',
+      'step.finish',
+      'step.start',
+      'step.finish',
+    ]);
+    const [start] = ofType(mainEvents, 'step.start');
+    const [finish] = ofType(mainEvents, 'step.finish');
+    expect(finish.step.durationMs).toBeLessThan(finish.at - start.at);
+  });
+
   it('ノードごとに指定したプロバイダのモデルを呼び出す', async () => {
     scripts.set('main', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('まとめました')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: 'A' } }])),

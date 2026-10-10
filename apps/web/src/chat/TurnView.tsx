@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
-import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, StepRecord, TurnRecord } from 'protocol';
+import { useMemo, useState, type ReactNode } from 'react';
+import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, TurnRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds.tsx';
 import { Markdown } from '../markdown/Markdown.tsx';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store.ts';
 import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives.tsx';
-import { buildCallTree, type CallItem, type CallNote, type CallView } from './callTree.ts';
+import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree.ts';
 import { formatCost, formatDuration, formatTokens, formatTotals } from './totals.ts';
 
 /** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
@@ -70,7 +70,7 @@ function BranchSwitcher({ turn }: { turn: TurnRecord }) {
   );
 }
 
-/** 発言を書き換えて、同じ親の下に新しい分岐として送り直す */
+/** ユーザー入力編集テキストエディタ。発言を書き換えて、同じ親の下に新しい分岐として送り直す */
 function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boolean; onClose: () => void }) {
   const [text, setText] = useState(turn.userText);
   const submit = () => {
@@ -112,104 +112,114 @@ function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boole
   );
 }
 
-/** AI側の応答欄。ツール呼び出しも含む */
+/** AI側の応答欄。LLM へのリクエストとツール呼び出しを時系列に並べる */
 function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
   const liveText = useSession((s) => s.liveText[call.callId]);
   return (
     <>
-      {call.items.map((item) => (
-        <Item key={item.kind === 'text' ? `step:${item.stepIndex}` : item.toolCallId} item={item} graph={graph} />
+      {call.totals.steps > 1 && <div className="my-1 text-xs text-muted">合計: {formatTotals(call.totals)}</div>}
+      {call.steps.map((step) => (
+        <Step key={step.index} step={step} liveText={step.record ? undefined : liveText} graph={graph} />
       ))}
-      {liveText && <Markdown className="my-1 text-muted" text={liveText} />}
-      {call.status === 'running' && !liveText && <Pending />}
+      {call.status === 'running' && call.steps.length === 0 && <Pending />}
       <Notes notes={call.notes} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
-      {call.totals.steps > 0 && <StepList call={call} />}
     </>
   );
 }
 
-/**
- * ツール呼び出し結果欄。
- * ツールがサブエージェントであることもあるので、AI応答欄とは循環参照の関係にある。
- */
-function Item({ item, graph }: { item: CallItem; graph: GraphDefinition }) {
-  if (item.kind === 'text') {
-    const abortedMark = "after:text-muted after:content-['_…(中断)']";
-    return <Markdown className={`my-1 ${item.aborted ? abortedMark : ''}`} text={item.text} />;
+/** LLM への1リクエスト分。内訳の行、応答のテキスト、その応答で行ったツールコールの順に並べる */
+function Step({ step, liveText, graph }: { step: StepView; liveText: string | undefined; graph: GraphDefinition }) {
+  const { record } = step;
+  const abortedMark = "after:text-muted after:content-['_…(中断)']";
+  return (
+    <>
+      <StepEntry step={step} />
+      {record?.text && <Markdown className={`my-1 ${record.aborted ? abortedMark : ''}`} text={record.text} />}
+      {!record && liveText && <Markdown className="my-1 text-muted" text={liveText} />}
+      {step.tools.map((tool) => (
+        <ToolCall key={tool.toolCallId} tool={tool} graph={graph} />
+      ))}
+    </>
+  );
+}
+
+/** ステップの内訳の行。開くと思考と生のリクエスト・レスポンスを見せる */
+function StepEntry({ step }: { step: StepView }) {
+  const { record } = step;
+  if (!record) {
+    return (
+      <Entry status="running" label="応答中" metrics={[]}>
+        {() => <Pending />}
+      </Entry>
+    );
   }
-  const { child } = item;
+  const json = (value: unknown) => () => <CodeBlock text={JSON.stringify(value, null, 2)} />;
+  const metrics = [formatTokens(record.usage.inputTokens, record.usage.outputTokens), formatDuration(record.durationMs), formatCost(record.cost)];
+  return (
+    <Entry status={record.aborted ? 'aborted' : 'done'} label={`${record.model} ${record.finishReason}`} metrics={metrics}>
+      {() => (
+        <>
+          {record.reasoning && <Disclosure summary="思考">{() => <CodeBlock text={record.reasoning ?? ''} />}</Disclosure>}
+          {record.request !== null && <Disclosure summary="リクエスト">{json(record.request)}</Disclosure>}
+          {record.response !== null && <Disclosure summary="レスポンス">{json(record.response)}</Disclosure>}
+        </>
+      )}
+    </Entry>
+  );
+}
+
+/** ツール呼び出し結果欄 */
+function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition }) {
+  const { child, result } = tool;
+  const metrics = result ? [formatDuration(result.durationMs)] : [];
   if (child) {
-    const summary = (
+    const label = (
       <>
-        <StatusDot status={child.status} />
-        🤖 {nodeTitle(graph, child.nodeId)}: <span className="text-ink">{child.task}</span>
+        {nodeTitle(graph, child.nodeId)}: <span className="text-ink">{child.task}</span>
       </>
     );
     return (
-      <Disclosure className={callDetails} summary={summary}>
+      <Entry status={child.status} label={label} metrics={metrics}>
         {() => (
-          <div className="pl-1">
-            <Notes notes={item.notes} />
+          <>
+            <Notes notes={tool.notes} />
             <CallBody call={child} graph={graph} />
-          </div>
+          </>
         )}
-      </Disclosure>
+      </Entry>
     );
   }
+  return (
+    <Entry status={result ? (result.isError ? 'error' : 'done') : 'running'} label={tool.toolName} metrics={metrics}>
+      {() => (
+        <>
+          <CodeBlock text={JSON.stringify(tool.input, null, 2)} />
+          {result && <CodeBlock text={typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2)} />}
+          <Notes notes={tool.notes} />
+        </>
+      )}
+    </Entry>
+  );
+}
+
+/** 応答欄に時系列で並ぶ、LLM へのリクエストやツールコールの1行。開くと中身を字下げして見せる */
+function Entry({ status, label, metrics, children }: { status: RunStatus; label: ReactNode; metrics: string[]; children: () => ReactNode }) {
   const summary = (
     <>
-      <StatusDot status={item.result ? (item.result.isError ? 'error' : 'done') : 'running'} />
-      🔧 {item.toolName}
-      {item.result && <span className="ml-1.5 text-xs">{formatDuration(item.result.durationMs)}</span>}
+      <StatusDot status={status} />
+      {label}
+      {metrics.map((metric) => (
+        <span key={metric} className="ml-2 text-xs">
+          {metric}
+        </span>
+      ))}
     </>
   );
   return (
-    <Disclosure className={callDetails} summary={summary}>
-      {() => (
-        <>
-          <CodeBlock text={JSON.stringify(item.input, null, 2)} />
-          {item.result && <CodeBlock text={typeof item.result.output === 'string' ? item.result.output : JSON.stringify(item.result.output, null, 2)} />}
-          <Notes notes={item.notes} />
-        </>
-      )}
+    <Disclosure className="my-0.5 text-sm" summary={summary}>
+      {() => <div className="my-1 ml-1 border-l-2 pl-3">{children()}</div>}
     </Disclosure>
-  );
-}
-
-const callDetails = 'my-1 border-l-2 px-2 py-0.5';
-
-/** 呼び出しのステップの一覧。見出しにはサブエージェントも含めた集計を出す */
-function StepList({ call }: { call: CallView }) {
-  return (
-    <Disclosure className={`${callDetails} text-sm`} summary={formatTotals(call.totals)}>
-      {() => call.steps.map((step) => <StepDetail key={step.index} step={step} />)}
-    </Disclosure>
-  );
-}
-
-/** LLM への1リクエスト分の内訳と、生のリクエスト・レスポンス */
-function StepDetail({ step }: { step: StepRecord }) {
-  const json = (value: unknown) => () => <CodeBlock text={JSON.stringify(value, null, 2)} />;
-  return (
-    <div className="my-1">
-      <div className="flex gap-2">
-        <span>#{step.index}</span>
-        <span>{step.model}</span>
-        <span>
-          {step.finishReason}
-          {step.aborted && '（中断）'}
-        </span>
-        <span>{formatTokens(step.usage.inputTokens, step.usage.outputTokens)}</span>
-        <span>{formatDuration(step.durationMs)}</span>
-        <span>{formatCost(step.cost)}</span>
-      </div>
-      <div className="pl-3">
-        {step.reasoning && <Disclosure summary="思考">{() => <CodeBlock text={step.reasoning ?? ''} />}</Disclosure>}
-        {step.request !== null && <Disclosure summary="リクエスト">{json(step.request)}</Disclosure>}
-        {step.response !== null && <Disclosure summary="レスポンス">{json(step.response)}</Disclosure>}
-      </div>
-    </div>
   );
 }
 
@@ -266,7 +276,7 @@ function CopyButton({ text }: { text: string }) {
 
 /** 呼び出しの応答として見せたテキスト。ツールコールやサブエージェントの中身は含めない */
 function responseText(call: CallView): string {
-  return call.items.flatMap((item) => (item.kind === 'text' ? [item.text] : [])).join('\n\n');
+  return call.steps.flatMap((step) => (step.record?.text ? [step.record.text] : [])).join('\n\n');
 }
 
 function finishErrorOf(events: RunEvent[] | undefined): string | null {
