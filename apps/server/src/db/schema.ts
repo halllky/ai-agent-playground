@@ -2,6 +2,7 @@ import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlit
 import type { ModelMessage } from 'ai';
 import type { GraphDefinition, RunEvent, RunStatus } from 'protocol';
 
+/** 名前を付けて保存されたグラフ */
 export const graphs = sqliteTable('graphs', {
   id: text().primaryKey(),
   name: text().notNull(),
@@ -9,6 +10,7 @@ export const graphs = sqliteTable('graphs', {
   updatedAt: integer().notNull(),
 });
 
+/** 会話。表示中の分岐の末端ターンを持つ */
 export const sessions = sqliteTable('sessions', {
   id: text().primaryKey(),
   title: text().notNull(),
@@ -19,6 +21,7 @@ export const sessions = sqliteTable('sessions', {
   createdAt: integer().notNull(),
 });
 
+/** ユーザーの発言1回と、それに対する実行1回。parentTurnId でツリーを成す */
 export const turns = sqliteTable(
   'turns',
   {
@@ -28,6 +31,7 @@ export const turns = sqliteTable(
       .references(() => sessions.id, { onDelete: 'cascade' }),
     parentTurnId: text(),
     userText: text().notNull(),
+    /** 実行時点のグラフの写し。元のグラフを後で編集しても変わらない */
     graph: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
     status: text().$type<RunStatus>().notNull(),
     /** メインエージェントがこのターンで生成したメッセージ。次ターン以降の履歴になる */
@@ -37,6 +41,7 @@ export const turns = sqliteTable(
   (t) => [index('turns_session_idx').on(t.sessionId)],
 );
 
+/** ターン実行中に発生したイベント。永続化対象外の種別は含まない */
 export const runEvents = sqliteTable(
   'run_events',
   {
@@ -51,7 +56,7 @@ export const runEvents = sqliteTable(
 
 /**
  * セッションを通して継続するサブエージェントの記憶。
- * 書いたターンに紐づけて残し、読むときは祖先ターンのうち最も近いものを使う。
+ * 上書きせず書いたターンごとに残すので、ターンの分岐ごとに異なる記憶を持てる。
  */
 export const agentMemories = sqliteTable(
   'agent_memories',

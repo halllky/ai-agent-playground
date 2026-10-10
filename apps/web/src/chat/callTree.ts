@@ -10,6 +10,7 @@ export type CallView = {
   items: CallItem[];
 };
 
+/** 呼び出しの中に時系列で並べる要素。テキストか、ツールコール（サブエージェント呼び出しを含む） */
 export type CallItem =
   | { kind: 'text'; text: string; aborted: boolean }
   | {

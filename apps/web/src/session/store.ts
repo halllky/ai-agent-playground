@@ -32,6 +32,11 @@ const initialState: State = {
   error: null,
 };
 
+/**
+ * 画面全体で共有する、グラフ・セッション・実行状況の状態。
+ * 書き換えはこのモジュールの操作関数を通して行い、サーバーとの同期もそこで行う。
+ * 操作関数はサーバーとの通信の失敗を例外にせず、error に入れて表示に回す。
+ */
 export const useSession = create<State>(() => initialState);
 
 /** 画面を開いたときの読み込み。グラフが1つもなければ既定のグラフを作る */
@@ -49,6 +54,7 @@ export async function initialize(): Promise<void> {
   );
 }
 
+/** セッションを開き、表示中の分岐のイベントを購読する。null ならセッションを開いていない状態にする */
 export async function openSession(sessionId: string | null): Promise<void> {
   stopFollowingAll();
   if (!sessionId) {
@@ -69,6 +75,7 @@ export async function openSession(sessionId: string | null): Promise<void> {
   });
 }
 
+/** 編集中のグラフを参照する新しいセッションを作って開く */
 export async function createSession(): Promise<void> {
   const { graphId } = useSession.getState();
   if (!graphId) return;
@@ -101,14 +108,13 @@ export async function createGraph(name: string, definition?: GraphDefinition): P
   });
 }
 
+/** グラフの名前を変える。編集対象は切り替えない */
 export async function renameGraph(graphId: string, name: string): Promise<void> {
   await report(async () => {
     const graph = await api.updateGraph(graphId, { name });
     useSession.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graph.id ? graph : g)) }));
   });
 }
-
-let pendingSave: { graphId: string; timer: ReturnType<typeof setTimeout> } | undefined;
 
 /** 編集中のグラフ構成を書き換える。保存は少し遅らせてまとめて行う */
 export function updateGraphDefinition(update: (definition: GraphDefinition) => GraphDefinition): void {
@@ -119,15 +125,6 @@ export function updateGraphDefinition(update: (definition: GraphDefinition) => G
   useSession.setState({ graphs: graphs.map((g) => (g.id === graph.id ? { ...g, definition } : g)) });
   if (pendingSave) clearTimeout(pendingSave.timer);
   pendingSave = { graphId: graph.id, timer: setTimeout(() => void flushGraphSave(), 500) };
-}
-
-async function flushGraphSave(): Promise<void> {
-  if (!pendingSave) return;
-  const { graphId, timer } = pendingSave;
-  clearTimeout(timer);
-  pendingSave = undefined;
-  const graph = useSession.getState().graphs.find((g) => g.id === graphId);
-  if (graph) await report(() => api.updateGraph(graphId, { definition: graph.definition }));
 }
 
 /** 表示中の分岐の末尾に発言を追加して実行する。セッションがなければ作る */
@@ -144,10 +141,12 @@ export async function send(userText: string): Promise<void> {
   });
 }
 
+/** 実行中のターンの中断を要求する。中断の結果は購読中のイベントで届く */
 export async function abort(turnId: string): Promise<void> {
   await report(() => api.abortTurn(turnId));
 }
 
+/** 表示中のエラーを消す */
 export function dismissError(): void {
   useSession.setState({ error: null });
 }
@@ -160,6 +159,17 @@ export function turnPath(turns: TurnRecord[], activeTurnId: string | null): Turn
     path.unshift(turn);
   }
   return path;
+}
+
+let pendingSave: { graphId: string; timer: ReturnType<typeof setTimeout> } | undefined;
+
+async function flushGraphSave(): Promise<void> {
+  if (!pendingSave) return;
+  const { graphId, timer } = pendingSave;
+  clearTimeout(timer);
+  pendingSave = undefined;
+  const graph = useSession.getState().graphs.find((g) => g.id === graphId);
+  if (graph) await report(() => api.updateGraph(graphId, { definition: graph.definition }));
 }
 
 const following = new Map<string, () => void>();

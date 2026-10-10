@@ -122,6 +122,7 @@ function summaryOf(event: RunEvent): string {
   }
 }
 
+/** ステップの集計値。cost はコストが判明したステップだけの合計で、1つも判明しなければ null */
 type Totals = { steps: number; inputTokens: number; outputTokens: number; cost: number | null; durationMs: number };
 
 function Stats({ path, events }: { path: TurnRecord[]; events: EventsByTurn }) {
@@ -131,9 +132,15 @@ function Stats({ path, events }: { path: TurnRecord[]; events: EventsByTurn }) {
       if (event.type !== 'step.finish') continue;
       byNode.set(event.nodeId, add(byNode.get(event.nodeId) ?? emptyTotals(), event.step));
     }
-    const nodeRows = [...byNode].map(([nodeId, totals]) => ({ key: `${turn.id}:${nodeId}`, turn: `T${i + 1}`, node: nodeTitle(turn.graph, nodeId), totals }));
+    const nodeRows = [...byNode].map(([nodeId, totals]) => ({
+      key: `${turn.id}:${nodeId}`,
+      turn: `T${i + 1}`,
+      node: nodeTitle(turn.graph, nodeId),
+      totals,
+      isTotal: false,
+    }));
     const turnTotals = nodeRows.reduce((acc, r) => merge(acc, r.totals), emptyTotals());
-    return [...nodeRows, { key: turn.id, turn: `T${i + 1}`, node: '合計', totals: turnTotals }];
+    return [...nodeRows, { key: turn.id, turn: `T${i + 1}`, node: '合計', totals: turnTotals, isTotal: true }];
   });
 
   return (
@@ -152,7 +159,7 @@ function Stats({ path, events }: { path: TurnRecord[]; events: EventsByTurn }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.key} className={r.node === '合計' ? 'total' : ''}>
+            <tr key={r.key} className={r.isTotal ? 'total' : ''}>
               <td>{r.turn}</td>
               <td>{r.node}</td>
               <td>{r.totals.steps}</td>

@@ -5,6 +5,7 @@ import type { RunEvent } from 'protocol';
 import { db, turns } from '../db/index.ts';
 import { abortTurn, followTurn } from '../run/index.ts';
 
+/** ターンのイベント配信と中断。ターンの作成はここでは扱わない */
 export const turnRoutes = new Hono()
   .get('/:id/events', (c) => {
     const id = c.req.param('id');
@@ -14,6 +15,7 @@ export const turnRoutes = new Hono()
       const pending: RunEvent[] = [];
       let finished = false;
       let wake = () => {};
+      // listener は同期的に呼ばれるので、SSE の書き込みとは切り離してキューに溜める
       const following = followTurn(id, (event) => {
         pending.push(event);
         if (event.type === 'turn.finish') finished = true;

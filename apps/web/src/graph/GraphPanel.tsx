@@ -15,10 +15,19 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import { diagnoseGraph, edgeKindBetween, type GraphDefinition, type GraphNode, type GraphWarning } from 'protocol';
+import {
+  createEdge,
+  createNode,
+  diagnoseGraph,
+  edgeKindBetween,
+  type GraphDefinition,
+  type GraphNode,
+  type GraphWarning,
+  type NodeKind,
+} from 'protocol';
 import { updateGraphDefinition, useSession } from '../session/store.ts';
 import { NumberField } from './fields.tsx';
-import { edgeKindView, edgeKindViews, nodeKindView, nodeKindViews } from './kinds.tsx';
+import { edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
 
 /** 編集中のグラフのキャンバスとインスペクタ */
 export function GraphPanel() {
@@ -81,17 +90,17 @@ function Canvas(props: {
     }),
   );
 
-  const addNode = (kind: GraphNode['kind']) => {
+  const addNode = (kind: NodeKind) => {
     const id = crypto.randomUUID();
     const position = screenToFlowPosition({ x: 120, y: 120 });
-    updateGraphDefinition((d) => ({ ...d, nodes: [...d.nodes, nodeKindViews[kind].create(id, position)] }));
+    updateGraphDefinition((d) => ({ ...d, nodes: [...d.nodes, createNode(kind, id, position)] }));
     onSelect({ nodeId: id });
   };
 
   return (
     <div className="graph-canvas">
       <div className="palette">
-        {(Object.keys(nodeKindViews) as GraphNode['kind'][])
+        {(Object.keys(nodeKindViews) as NodeKind[])
           .filter((kind) => nodeKindViews[kind].addable(definition))
           .map((kind) => (
             <button key={kind} onClick={() => addNode(kind)}>
@@ -143,7 +152,7 @@ function Canvas(props: {
             const target = d.nodes.find((n) => n.id === connection.target);
             const kind = source && target && edgeKindBetween(source, target);
             if (!kind) return d;
-            return { ...d, edges: [...d.edges, edgeKindViews[kind].create(crypto.randomUUID(), connection.source, connection.target)] };
+            return { ...d, edges: [...d.edges, createEdge(kind, crypto.randomUUID(), connection.source, connection.target)] };
           });
         }}
       >
@@ -219,7 +228,7 @@ function Inspector({ definition, warnings, selection }: { definition: GraphDefin
   return (
     <div className="inspector">
       <h3>グラフ設定</h3>
-      <WarningList messages={warnings.filter((w) => 'graph' in w.target).map((w) => w.message)} />
+      <WarningList messages={warningsFor(warnings, { graph: true })} />
       <NumberField
         label="呼び出しネストの上限"
         min={1}
@@ -242,10 +251,13 @@ function WarningList({ messages }: { messages: string[] }) {
   );
 }
 
-function warningsFor(warnings: GraphWarning[], target: { nodeId: string } | { edgeId: string }): string[] {
-  return warnings
-    .filter((w) =>
-      'nodeId' in target ? 'nodeId' in w.target && w.target.nodeId === target.nodeId : 'edgeId' in w.target && w.target.edgeId === target.edgeId,
-    )
-    .map((w) => w.message);
+function warningsFor(warnings: GraphWarning[], target: GraphWarning['target']): string[] {
+  const key = targetKey(target);
+  return warnings.filter((w) => targetKey(w.target) === key).map((w) => w.message);
+}
+
+function targetKey(target: GraphWarning['target']): string {
+  if ('nodeId' in target) return `node:${target.nodeId}`;
+  if ('edgeId' in target) return `edge:${target.edgeId}`;
+  return 'graph';
 }

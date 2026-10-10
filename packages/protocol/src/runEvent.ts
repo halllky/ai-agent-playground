@@ -8,6 +8,10 @@ import type { CallSettings } from './graph.ts';
  */
 export type RunEvent = RunEventHeader & RunEventBody;
 
+/**
+ * 全イベント共通の項目。
+ * どの呼び出しにも属さない `turn.finish` では、callId は turnId と同じ値、nodeId は空文字になる。
+ */
 export type RunEventHeader = {
   turnId: string;
   /** ターン内で単調増加。永続化されない `text.delta` には付かない */
@@ -18,6 +22,7 @@ export type RunEventHeader = {
   nodeId: string;
 };
 
+/** イベント種別ごとの項目 */
 export type RunEventBody =
   | {
       type: 'call.start';
@@ -37,8 +42,10 @@ export type RunEventBody =
   | { type: 'turn.finish'; status: RunStatus; error: string | null };
 
 export type RunEventType = RunEventBody['type'];
+/** 種別 T のイベント */
 export type RunEventOf<T extends RunEventType> = RunEventHeader & Extract<RunEventBody, { type: T }>;
 
+/** ターンやエージェント呼び出しの実行状態 */
 export type RunStatus = 'running' | 'done' | 'aborted' | 'error';
 
 /** LLM への1リクエスト分 */

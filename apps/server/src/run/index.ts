@@ -2,7 +2,7 @@ import type { ModelMessage } from 'ai';
 import { asc, eq, inArray, max } from 'drizzle-orm';
 import { findMainAgent, type GraphDefinition, type RunEvent, type RunEventBody } from 'protocol';
 import { db, lineageOf, runEvents, turns } from '../db/index.ts';
-import { callAgent, type CallHeader, type RunScope } from './agentCall.ts';
+import { callAgent, type AgentCallOutcome, type CallHeader, type RunScope } from './agentCall.ts';
 import type { TurnMemory } from './memory.ts';
 
 type RunListener = (event: RunEvent) => void;
@@ -44,9 +44,7 @@ export function closeInterruptedTurns(): void {
       turnId: id,
       seq: (last?.seq ?? 0) + 1,
       at: Date.now(),
-      callId: id,
-      parentCallId: null,
-      nodeId: '',
+      ...turnHeaderOf(id),
       type: 'turn.finish',
       status: 'error',
       error: 'サーバーの停止により中断されました',
@@ -56,6 +54,7 @@ export function closeInterruptedTurns(): void {
   }
 }
 
+/** 実行中のターン1件。イベントの採番・永続化と購読者への配信を受け持つ */
 class Run implements RunScope {
   readonly signal: AbortSignal;
   readonly turnMemory: TurnMemory = new Map();
@@ -87,7 +86,7 @@ class Run implements RunScope {
   }
 
   async execute(parentTurnId: string | null, userText: string): Promise<void> {
-    const turnHeader: CallHeader = { callId: this.turnId, parentCallId: null, nodeId: '' };
+    const turnHeader = turnHeaderOf(this.turnId);
     const main = findMainAgent(this.graph);
     if (!main) {
       this.finish(turnHeader, 'error', [], 'メインエージェントがありません');
@@ -110,10 +109,15 @@ class Run implements RunScope {
     }
   }
 
-  private finish(header: CallHeader, status: 'done' | 'aborted' | 'error', mainMessages: ModelMessage[], error: string | null) {
+  private finish(header: CallHeader, status: AgentCallOutcome['status'], mainMessages: ModelMessage[], error: string | null) {
     db.update(turns).set({ status, mainMessages }).where(eq(turns.id, this.turnId)).run();
     this.emit(header, { type: 'turn.finish', status, error });
   }
+}
+
+/** どの呼び出しにも属さない、ターン全体についてのイベントのヘッダ */
+function turnHeaderOf(turnId: string): CallHeader {
+  return { callId: turnId, parentCallId: null, nodeId: '' };
 }
 
 /** parentTurnId までの分岐をたどった、メインエージェントから見た会話履歴 */

@@ -1,6 +1,7 @@
 import { edgeKindBetween, toolNamePattern, type GraphDefinition, type GraphNode } from './graph.ts';
 import type { ModelInfo } from './model.ts';
 
+/** グラフ構成への警告1件。target はどの要素についての警告か */
 export type GraphWarning = {
   target: { nodeId: string } | { edgeId: string } | { graph: true };
   message: string;
@@ -9,6 +10,7 @@ export type GraphWarning = {
 /**
  * 実行はできるが意図どおりに動かない可能性がある構成を列挙する。
  * 実行を止める判定には使わない（実験のため、警告付きでも実行できるようにしている）。
+ * models が undefined（モデル一覧が未取得）なら、モデルに関する検査は省く。
  */
 export function diagnoseGraph(graph: GraphDefinition, models: ModelInfo[] | undefined): GraphWarning[] {
   const warnings: GraphWarning[] = [];

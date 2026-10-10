@@ -16,6 +16,7 @@ const updateSchema = z.object({
 });
 const createTurnSchema = z.object({ parentTurnId: z.string().nullable(), userText: z.string().min(1) });
 
+/** セッションの一覧・作成・更新・削除と、ターンの開始 */
 export const sessionRoutes = new Hono()
   .get('/', (c) => c.json<SessionRecord[]>(db.select().from(sessions).orderBy(desc(sessions.createdAt)).all()))
   .post('/', async (c) => {
@@ -70,7 +71,7 @@ function assertGraphExists(graphId: string): void {
  * 新しいターンを保存し、表示中の分岐をそのターンに切り替える。
  * 過去ターンからのやり直しでも、記録するグラフは常にその時点の現在のグラフ。
  */
-function createTurn(session: SessionRecord, parentTurnId: string | null, userText: string) {
+function createTurn(session: SessionRecord, parentTurnId: string | null, userText: string): typeof turns.$inferSelect {
   if (parentTurnId) {
     const parent = db
       .select({ id: turns.id })

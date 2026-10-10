@@ -9,6 +9,7 @@ import { parseBody } from './parseBody.ts';
 const createSchema = z.object({ name: z.string().min(1), definition: graphDefinitionSchema.optional() });
 const updateSchema = z.object({ name: z.string().min(1).optional(), definition: graphDefinitionSchema.optional() });
 
+/** グラフの一覧・作成・更新・削除。セッションから参照されているグラフは削除できない */
 export const graphRoutes = new Hono()
   .get('/', (c) => c.json<GraphRecord[]>(db.select().from(graphs).orderBy(asc(graphs.name)).all()))
   .post('/', async (c) => {

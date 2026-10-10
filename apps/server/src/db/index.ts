@@ -15,6 +15,7 @@ const sqlite = new Database(databasePath);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
 
+/** マイグレーション適用済みの DB 接続。モジュールの読み込み時に開く */
 export const db = drizzle(sqlite, { schema, casing: 'snake_case' });
 
 migrate(db, { migrationsFolder: fileURLToPath(new URL('../../drizzle', import.meta.url)) });

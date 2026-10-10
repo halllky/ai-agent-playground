@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 import {
-  defaultModel,
   memoryModes,
   passModes,
   returnModes,
+  type AgentNode,
   type CallSettings,
   type EdgeOf,
   type GraphDefinition,
@@ -28,16 +28,17 @@ type NodeKindView<K extends NodeKind> = {
   acceptsIncoming: boolean;
   /** パレットから追加できるか */
   addable(graph: GraphDefinition): boolean;
-  create(id: string, position: GraphNode['position']): NodeOf<K>;
   Inspector(props: { node: NodeOf<K>; onChange: (node: NodeOf<K>) => void }): ReactNode;
 };
 
+/** エッジ種別ごとの画面上の振る舞い */
 type EdgeKindView<K extends GraphEdge['kind']> = {
+  /** キャンバス上のエッジに添える説明。空文字なら何も出さない */
   label(edge: EdgeOf<K>): string;
-  create(id: string, source: string, target: string): EdgeOf<K>;
   Inspector(props: { edge: EdgeOf<K>; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
 };
 
+/** 全ノード種別の画面上の振る舞い */
 export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
   mainAgent: {
     label: 'メインエージェント',
@@ -45,12 +46,6 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => node.config.model,
     acceptsIncoming: false,
     addable: (graph) => !graph.nodes.some((n) => n.kind === 'mainAgent'),
-    create: (id, position) => ({
-      id,
-      kind: 'mainAgent',
-      position,
-      config: { model: defaultModel, systemPrompt: 'You are a helpful assistant.', maxSteps: 10 },
-    }),
     Inspector: ({ node, onChange }) => <AgentFields node={node} onChange={onChange} />,
   },
   subAgent: {
@@ -59,19 +54,6 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
     summary: (node) => node.config.model,
     acceptsIncoming: true,
     addable: () => true,
-    create: (id, position) => ({
-      id,
-      kind: 'subAgent',
-      position,
-      config: {
-        name: `agent_${id.slice(0, 4)}`,
-        description: '',
-        model: defaultModel,
-        systemPrompt: '',
-        maxSteps: 10,
-        callDefaults: { pass: 'task', returns: 'finalText', memory: 'fresh' },
-      },
-    }),
     Inspector: ({ node, onChange }) => {
       const set = (config: Partial<NodeOf<'subAgent'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
       const setDefault = (settings: Partial<CallSettings>) => set({ callDefaults: { ...node.config.callDefaults, ...settings } });
@@ -90,7 +72,23 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
   },
 };
 
-export const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
+/** node の種別の振る舞い */
+export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {
+  return nodeKindViews[node.kind] as NodeKindView<NodeKind>;
+}
+
+/** グラフ上のノードの表示名。ノードが見つからなければ id をそのまま返す */
+export function nodeTitle(graph: GraphDefinition, nodeId: string): string {
+  const node = graph.nodes.find((n) => n.id === nodeId);
+  return node ? nodeKindView(node).title(node) : nodeId;
+}
+
+/** edge の種別の振る舞い */
+export function edgeKindView(edge: GraphEdge): EdgeKindView<GraphEdge['kind']> {
+  return edgeKindViews[edge.kind];
+}
+
+const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
   call: {
     label: (edge) =>
       [
@@ -100,7 +98,6 @@ export const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
       ]
         .filter(Boolean)
         .join(' / '),
-    create: (id, source, target) => ({ id, kind: 'call', source, target, settings: {} }),
     Inspector: ({ edge, target, onChange }) => {
       const defaults = target?.kind === 'subAgent' ? target.config.callDefaults : undefined;
       const set = (settings: Partial<CallSettings>) => onChange({ ...edge, settings: { ...edge.settings, ...settings } });
@@ -115,20 +112,6 @@ export const edgeKindViews: { [K in GraphEdge['kind']]: EdgeKindView<K> } = {
   },
 };
 
-export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {
-  return nodeKindViews[node.kind] as NodeKindView<NodeKind>;
-}
-
-/** グラフ上のノードの表示名。ノードが見つからなければ id をそのまま返す */
-export function nodeTitle(graph: GraphDefinition, nodeId: string): string {
-  const node = graph.nodes.find((n) => n.id === nodeId);
-  return node ? nodeKindView(node).title(node) : nodeId;
-}
-
-export function edgeKindView(edge: GraphEdge): EdgeKindView<GraphEdge['kind']> {
-  return edgeKindViews[edge.kind];
-}
-
 const passLabels: Record<CallSettings['pass'], string> = { task: 'タスクのみ', taskWithHistory: '親の履歴も渡す' };
 const returnLabels: Record<CallSettings['returns'], string> = { finalText: '最終テキスト', allSteps: '全ステップ' };
 const memoryLabels: Record<CallSettings['memory'], string> = { fresh: '毎回まっさら', turn: 'ターン内で継続', session: 'セッションで継続' };
@@ -136,7 +119,8 @@ const passOptions = passModes.map((value) => ({ value, label: passLabels[value] 
 const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));
 const memoryOptions = memoryModes.map((value) => ({ value, label: memoryLabels[value] }));
 
-function AgentFields<N extends NodeOf<'mainAgent'> | NodeOf<'subAgent'>>({ node, onChange }: { node: N; onChange: (node: N) => void }) {
+/** エージェント系ノードに共通の設定項目 */
+function AgentFields<N extends AgentNode>({ node, onChange }: { node: N; onChange: (node: N) => void }) {
   const set = (config: Partial<N['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
   return (
     <>

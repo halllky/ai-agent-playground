@@ -32,6 +32,7 @@ export function recallMemory(scope: MemoryScope, memoryKey: string, mode: CallSe
   }
 }
 
+/** memoryKey で識別されるサブエージェントの会話を、mode に応じた範囲で持ち越せるよう残す。fresh なら何もしない */
 export function storeMemory(
   scope: MemoryScope,
   memoryKey: string,

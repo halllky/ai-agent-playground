@@ -4,6 +4,7 @@ import { nodeTitle } from '../graph/kinds.tsx';
 import { abort, send, turnPath, useSession } from '../session/store.ts';
 import { buildCallTree, type CallItem, type CallView } from './callTree.ts';
 
+/** 表示中の分岐の会話と、発言の入力欄。サブエージェント呼び出しは入れ子で表示する */
 export function ChatPanel() {
   const turns = useSession((s) => s.turns);
   const activeTurnId = useSession((s) => s.activeTurnId);

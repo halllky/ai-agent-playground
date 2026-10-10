@@ -3,11 +3,13 @@ import { stepCountIs, streamText, tool, type ModelMessage, type StepResult, type
 import { z } from 'zod';
 import {
   resolveCallSettings,
+  type AgentNode,
   type CallSettings,
   type EdgeOf,
   type GraphDefinition,
   type NodeOf,
   type RunEventBody,
+  type RunEventHeader,
   type RunStatus,
   type StepRecord,
 } from 'protocol';
@@ -24,10 +26,10 @@ export type RunScope = {
   emit(header: CallHeader, body: RunEventBody): void;
 };
 
-export type CallHeader = { callId: string; parentCallId: string | null; nodeId: string };
+/** イベントのヘッダのうち、どの呼び出しで発生したかを表す部分 */
+export type CallHeader = Pick<RunEventHeader, 'callId' | 'parentCallId' | 'nodeId'>;
 
-export type AgentNode = NodeOf<'mainAgent'> | NodeOf<'subAgent'>;
-
+/** エージェント呼び出し1回分の指定 */
 export type AgentCallRequest = {
   node: AgentNode;
   parentCallId: string | null;
@@ -40,6 +42,7 @@ export type AgentCallRequest = {
   messages: ModelMessage[];
 };
 
+/** エージェント呼び出し1回分の結果 */
 export type AgentCallOutcome = {
   status: Exclude<RunStatus, 'running'>;
   output: string;
@@ -51,6 +54,7 @@ export type AgentCallOutcome = {
 /**
  * エージェントを1回呼び出し、ツールコールのループが終わるまで進める。
  * 呼び出し先がサブエージェントを持つ場合は、ツールの実行として再帰的に呼び出す。
+ * LLM 呼び出しの失敗や Abort は例外にせず、結果の status として返す。
  */
 export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise<AgentCallOutcome> {
   const header: CallHeader = { callId: randomUUID(), parentCallId: req.parentCallId, nodeId: req.node.id };
@@ -59,6 +63,7 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
 
   const steps: StepResult<ToolSet>[] = [];
   let stepStartedAt = Date.now();
+  // まだ完了していないステップで生成済みのテキスト。Abort 時はこれが最後の出力になる
   let partialText = '';
   let error: string | null = null;
 
@@ -105,6 +110,7 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
   }
 
   const aborted = scope.signal.aborted;
+  // 各ステップの response.messages はそれまでの全ステップ分を含むため、最後のステップのものだけで足りる
   const responseMessages = [...(steps.at(-1)?.response.messages ?? [])];
   if (aborted && partialText) {
     // 打ち切られたステップは onStepFinish が呼ばれないため、途中までの出力をここで残す

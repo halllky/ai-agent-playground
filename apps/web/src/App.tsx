@@ -5,6 +5,7 @@ import { GraphPanel } from './graph/GraphPanel.tsx';
 import { LogPanel } from './log/LogPanel.tsx';
 import { TopBar } from './session/TopBar.tsx';
 
+/** 画面全体のレイアウト */
 export function App() {
   return (
     <div className="app">

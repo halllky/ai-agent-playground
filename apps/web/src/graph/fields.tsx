@@ -2,7 +2,7 @@ import { useId, type ReactNode } from 'react';
 import type { ModelInfo } from 'protocol';
 import { useSession } from '../session/store.ts';
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="field">
       <span className="field-label">{label}</span>
@@ -11,6 +11,7 @@ export function Field({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+/** 1行または複数行のテキスト入力 */
 export function TextField(props: { label: string; value: string; onChange: (value: string) => void; multiline?: boolean }) {
   return (
     <Field label={props.label}>
@@ -23,6 +24,7 @@ export function TextField(props: { label: string; value: string; onChange: (valu
   );
 }
 
+/** 整数の入力。min 未満や整数でない入力は反映しない */
 export function NumberField(props: { label: string; value: number; min: number; onChange: (value: number) => void }) {
   return (
     <Field label={props.label}>
@@ -39,6 +41,7 @@ export function NumberField(props: { label: string; value: number; min: number; 
   );
 }
 
+/** options から1つ選ぶ入力 */
 export function SelectField<T extends string>(props: {
   label: string;
   value: T;

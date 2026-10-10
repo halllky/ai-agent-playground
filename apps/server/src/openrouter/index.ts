@@ -12,7 +12,7 @@ export function languageModel(modelId: string): LanguageModel {
 const catalogTtlMs = 60 * 60 * 1000;
 let catalog: { models: ModelInfo[]; fetchedAt: number } | undefined;
 
-/** OpenRouter のモデル一覧。一定時間キャッシュする */
+/** OpenRouter のモデル一覧。一定時間キャッシュする。取得に失敗したら例外を投げ、失敗はキャッシュしない */
 export async function modelCatalog(): Promise<ModelInfo[]> {
   if (catalog && Date.now() - catalog.fetchedAt < catalogTtlMs) return catalog.models;
   const res = await fetch('https://openrouter.ai/api/v1/models');
