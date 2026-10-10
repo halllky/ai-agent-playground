@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react';
-import type { GraphDefinition, RunEvent, RunStatus, TurnRecord } from 'protocol';
+import type { GraphDefinition, RunEvent, RunEventOf, RunStatus, StepRecord, TurnRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds.tsx';
 import { Markdown } from '../markdown/Markdown.tsx';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store.ts';
-import { CodeBlock, ErrorNote, Pending } from '../ui/primitives.tsx';
-import { buildCallTree, type CallItem, type CallView } from './callTree.ts';
+import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives.tsx';
+import { buildCallTree, type CallItem, type CallNote, type CallView } from './callTree.ts';
+import { formatCost, formatDuration, formatTokens, formatTotals } from './totals.ts';
 
 /** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
   const events = useSession((s) => s.events[turn.id]);
-  const root = useMemo(() => buildCallTree(events ?? []), [events]);
+  const { root, notes } = useMemo(() => buildCallTree(events ?? []), [events]);
   const turnError = finishErrorOf(events);
   const [editing, setEditing] = useState(false);
   return (
@@ -32,6 +33,7 @@ export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
         </>
       )}
       <div className="wrap-break-word">
+        <Notes notes={notes} />
         {root ? <CallBody call={root} graph={turn.graph} /> : turn.status === 'running' && <Pending />}
         {turn.status === 'aborted' && <div className="text-sm text-muted">中断しました</div>}
         {turnError && !root?.error && <ErrorNote>{turnError}</ErrorNote>}
@@ -115,12 +117,14 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
   const liveText = useSession((s) => s.liveText[call.callId]);
   return (
     <>
-      {call.items.map((item, i) => (
-        <Item key={i} item={item} graph={graph} />
+      {call.items.map((item) => (
+        <Item key={item.kind === 'text' ? `step:${item.stepIndex}` : item.toolCallId} item={item} graph={graph} />
       ))}
       {liveText && <Markdown className="my-1 text-muted" text={liveText} />}
       {call.status === 'running' && !liveText && <Pending />}
+      <Notes notes={call.notes} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
+      {call.totals.steps > 0 && <StepList call={call} />}
     </>
   );
 }
@@ -134,33 +138,101 @@ function Item({ item, graph }: { item: CallItem; graph: GraphDefinition }) {
     const abortedMark = "after:text-muted after:content-['_…(中断)']";
     return <Markdown className={`my-1 ${item.aborted ? abortedMark : ''}`} text={item.text} />;
   }
-  if (item.child) {
+  const { child } = item;
+  if (child) {
+    const summary = (
+      <>
+        <StatusDot status={child.status} />
+        🤖 {nodeTitle(graph, child.nodeId)}: <span className="text-ink">{child.task}</span>
+      </>
+    );
     return (
-      <details className={callDetails}>
-        <summary className={callSummary}>
-          <StatusDot status={item.child.status} />
-          🤖 {nodeTitle(graph, item.child.nodeId)}: <span className="text-ink">{item.child.task}</span>
-        </summary>
-        <div className="pl-1">
-          <CallBody call={item.child} graph={graph} />
-        </div>
-      </details>
+      <Disclosure className={callDetails} summary={summary}>
+        {() => (
+          <div className="pl-1">
+            <Notes notes={item.notes} />
+            <CallBody call={child} graph={graph} />
+          </div>
+        )}
+      </Disclosure>
     );
   }
+  const summary = (
+    <>
+      <StatusDot status={item.result ? (item.result.isError ? 'error' : 'done') : 'running'} />
+      🔧 {item.toolName}
+      {item.result && <span className="ml-1.5 text-xs">{formatDuration(item.result.durationMs)}</span>}
+    </>
+  );
   return (
-    <details className={callDetails}>
-      <summary className={callSummary}>
-        <StatusDot status={item.result ? (item.result.isError ? 'error' : 'done') : 'running'} />
-        🔧 {item.toolName}
-      </summary>
-      <CodeBlock text={JSON.stringify(item.input, null, 2)} />
-      {item.result && <CodeBlock text={typeof item.result.output === 'string' ? item.result.output : JSON.stringify(item.result.output, null, 2)} />}
-    </details>
+    <Disclosure className={callDetails} summary={summary}>
+      {() => (
+        <>
+          <CodeBlock text={JSON.stringify(item.input, null, 2)} />
+          {item.result && <CodeBlock text={typeof item.result.output === 'string' ? item.result.output : JSON.stringify(item.result.output, null, 2)} />}
+          <Notes notes={item.notes} />
+        </>
+      )}
+    </Disclosure>
   );
 }
 
 const callDetails = 'my-1 border-l-2 px-2 py-0.5';
-const callSummary = 'cursor-pointer text-muted';
+
+/** 呼び出しのステップの一覧。見出しにはサブエージェントも含めた集計を出す */
+function StepList({ call }: { call: CallView }) {
+  return (
+    <Disclosure className={`${callDetails} text-sm`} summary={formatTotals(call.totals)}>
+      {() => call.steps.map((step) => <StepDetail key={step.index} step={step} />)}
+    </Disclosure>
+  );
+}
+
+/** LLM への1リクエスト分の内訳と、生のリクエスト・レスポンス */
+function StepDetail({ step }: { step: StepRecord }) {
+  const json = (value: unknown) => () => <CodeBlock text={JSON.stringify(value, null, 2)} />;
+  return (
+    <div className="my-1">
+      <div className="flex gap-2">
+        <span>#{step.index}</span>
+        <span>{step.model}</span>
+        <span>
+          {step.finishReason}
+          {step.aborted && '（中断）'}
+        </span>
+        <span>{formatTokens(step.usage.inputTokens, step.usage.outputTokens)}</span>
+        <span>{formatDuration(step.durationMs)}</span>
+        <span>{formatCost(step.cost)}</span>
+      </div>
+      <div className="pl-3">
+        {step.reasoning && <Disclosure summary="思考">{() => <CodeBlock text={step.reasoning ?? ''} />}</Disclosure>}
+        {step.request !== null && <Disclosure summary="リクエスト">{json(step.request)}</Disclosure>}
+        {step.response !== null && <Disclosure summary="レスポンス">{json(step.response)}</Disclosure>}
+      </div>
+    </div>
+  );
+}
+
+/** ログやファイルの変更の記録 */
+function Notes({ notes }: { notes: CallNote[] }) {
+  return notes.map((note, i) =>
+    note.type === 'log' ? (
+      <div key={i} className={`text-sm ${logColors[note.level]}`}>
+        {note.message}
+      </div>
+    ) : (
+      <div key={i} className="text-sm text-muted">
+        {note.deleted ? '削除' : '書き込み'} {note.volume}:{note.path}
+      </div>
+    ),
+  );
+}
+
+const logColors: Record<RunEventOf<'log'>['level'], string> = {
+  info: 'text-muted',
+  warn: 'text-warn',
+  error: 'text-danger',
+};
 
 function StatusDot({ status }: { status: RunStatus }) {
   return <span className={`mr-1.5 inline-block size-[7px] rounded-full ${statusDotColors[status]}`} />;

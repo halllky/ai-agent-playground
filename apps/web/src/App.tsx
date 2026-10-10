@@ -3,7 +3,6 @@ import { Allotment } from 'allotment';
 import { ChatPanel } from './chat/ChatPanel.tsx';
 import { FilePanel } from './files/FilePanel.tsx';
 import { GraphPanel } from './graph/GraphPanel.tsx';
-import { LogPanel } from './log/LogPanel.tsx';
 import { saveGraphs, useSession } from './session/store.ts';
 import { TopBar } from './session/TopBar.tsx';
 
@@ -14,22 +13,15 @@ export function App() {
     <div className="flex h-full flex-col">
       <TopBar />
       <div className="min-h-0 flex-1">
-        <Allotment vertical defaultSizes={[70, 30]}>
+        <Allotment defaultSizes={[40, 40, 20]}>
           <Allotment.Pane minSize={200}>
-            <Allotment defaultSizes={[40, 40, 20]}>
-              <Allotment.Pane minSize={200}>
-                <GraphPanel />
-              </Allotment.Pane>
-              <Allotment.Pane minSize={260}>
-                <ChatPanel />
-              </Allotment.Pane>
-              <Allotment.Pane minSize={140}>
-                <FilePanel />
-              </Allotment.Pane>
-            </Allotment>
+            <GraphPanel />
           </Allotment.Pane>
-          <Allotment.Pane minSize={80}>
-            <LogPanel />
+          <Allotment.Pane minSize={260}>
+            <ChatPanel />
+          </Allotment.Pane>
+          <Allotment.Pane minSize={140}>
+            <FilePanel />
           </Allotment.Pane>
         </Allotment>
       </div>

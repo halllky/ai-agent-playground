@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TurnRecord } from 'protocol';
 import { abort, createSession, openSession, send, turnPath, useSession } from '../session/store.ts';
+import { formatTotals, totalsOf } from './totals.ts';
 import { TurnView } from './TurnView.tsx';
 
 /**
@@ -23,6 +24,7 @@ export function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       <SessionBar />
+      <BranchTotals path={path} />
       <div className="flex-1 overflow-y-auto p-3">
         {path.map((turn) => (
           <TurnView key={turn.id} turn={turn} busy={runningTurn !== undefined} />
@@ -51,6 +53,14 @@ function SessionBar() {
       <button onClick={() => void createSession()}>新規</button>
     </div>
   );
+}
+
+/** 表示中の分岐の全ターンを通したステップの集計 */
+function BranchTotals({ path }: { path: TurnRecord[] }) {
+  const events = useSession((s) => s.events);
+  const totals = useMemo(() => totalsOf(path.flatMap((t) => (events[t.id] ?? []).flatMap((e) => (e.type === 'step.finish' ? [e.step] : [])))), [path, events]);
+  if (totals.steps === 0) return null;
+  return <div className="border-b px-2 py-0.5 text-xs text-muted">分岐全体: {formatTotals(totals)}</div>;
 }
 
 function Composer({ running }: { running: TurnRecord | undefined }) {

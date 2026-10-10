@@ -129,7 +129,6 @@ export async function callAgent(scope: RunScope, req: AgentCallRequest): Promise
     responseMessages,
     error,
   };
-  if (error) emit({ type: 'log', level: 'error', message: error });
   emit({ type: 'call.finish', status: outcome.status, output: outcome.output, error });
   return outcome;
 }

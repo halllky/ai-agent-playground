@@ -4,7 +4,7 @@ import type { CallSettings } from './graph.ts';
  * ターン実行中にサーバーから SSE で配信されるイベント。
  *
  * エージェント呼び出し1回を call と呼び、callId / parentCallId で呼び出しの親子関係を表す。
- * `text.delta` 以外は永続化され、過去ターンの表示やログはこれを再生して組み立てる。
+ * `text.delta` 以外は永続化され、過去ターンの表示はこれを再生して組み立てる。
  */
 export type RunEvent = RunEventHeader & RunEventBody;
 

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 /** パネルに表示するものがないときの案内 */
 export function EmptyNote({ children }: { children: ReactNode }) {
@@ -13,6 +13,17 @@ export function ErrorNote({ children }: { children: ReactNode }) {
 /** 読み込み中・応答待ちの印 */
 export function Pending() {
   return <span className="text-muted">…</span>;
+}
+
+/** 折りたたみ欄。中身は大きくなりうるので、開いている間だけ描画する */
+export function Disclosure({ className, summary, children }: { className?: string; summary: ReactNode; children: () => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className={className} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-muted">{summary}</summary>
+      {open && children()}
+    </details>
+  );
 }
 
 /** JSON などの整形済みテキスト。長い行は折り返す */
