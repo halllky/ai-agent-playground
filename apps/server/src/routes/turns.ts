@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import type { RunEvent } from 'protocol';
+import type { RunEvent, TurnFiles } from 'protocol';
 import { db, turns } from '../db/index.ts';
 import { abortTurn, followTurn } from '../run/index.ts';
 
-/** ターンのイベント配信と中断。ターンの作成はここでは扱わない */
+/** ターンのイベント配信・中断と、ターン時点のファイルの閲覧。ターンの作成はセッション側で扱う */
 export const turnRoutes = new Hono()
   .get('/:id/events', (c) => {
     const id = c.req.param('id');
@@ -38,4 +38,9 @@ export const turnRoutes = new Hono()
       }
     });
   })
-  .post('/:id/abort', (c) => (abortTurn(c.req.param('id')) ? c.body(null, 204) : c.json({ error: '実行中ではありません' }, 409)));
+  .post('/:id/abort', (c) => (abortTurn(c.req.param('id')) ? c.body(null, 204) : c.json({ error: '実行中ではありません' }, 409)))
+  /** ターン時点（実行中なら今）のファイル。書き込みはエージェントのツールからだけ行う */
+  .get('/:id/files', (c) => {
+    const turn = db.select({ state: turns.state }).from(turns).where(eq(turns.id, c.req.param('id'))).get();
+    return turn ? c.json<TurnFiles>(turn.state.files) : c.notFound();
+  });

@@ -4,15 +4,20 @@ import { nodeTitle } from '../graph/kinds';
 import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
 import { CodeBlock, CopyButton, Disclosure, ErrorNote, Pending } from '../ui/primitives';
-import { buildCallTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
-import { formatDuration, metricsOf, TotalsLine, type Totals } from './totals';
+import { buildTurnTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
+import { formatDuration, metricsOf, TotalsLine } from './totals';
 
-/** ユーザーが入力した内容とそれに対するAIの応答の1ターン分の表示 */
+/**
+ * ユーザーが入力した内容とそれに対する応答の1ターン分の表示。
+ * 実行中はノードの呼び出しを時系列に並べ、終わったらそれらを集計の折りたたみに収めて返答だけを見せる
+ */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
   const events = useSession((s) => s.events[turn.id]);
-  const { stages, root, totals, notes } = useMemo(() => buildCallTree(events ?? []), [events]);
+  const { calls, totals, notes } = useMemo(() => buildTurnTree(events ?? []), [events]);
   const turnError = finishErrorOf(events);
   const [editing, setEditing] = useState(false);
+  const graph = turn.graph;
+  const callEntries = calls.map((call) => <FlowCall key={call.callId} call={call} graph={graph} />);
   return (
     <div className="group mb-4">
       <BranchSwitcher turn={turn} />
@@ -33,23 +38,28 @@ export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
         </>
       )}
       <div className="wrap-break-word">
-        <Notes notes={notes} />
-        {root ? (
-          <CallBody call={root} graph={turn.graph} stages={stages} totals={totals} />
-        ) : (
-          // メインエージェントが始まる前（フローの段の実行中や、段の途中で中断したとき）は段だけを並べる
+        <Notes notes={notes} graph={graph} />
+        {turn.status === 'running' ? (
           <>
-            {stages.map((stage) => (
-              <ToolCall key={stage.toolCallId} tool={stage} graph={turn.graph} />
-            ))}
-            {turn.status === 'running' && <Pending />}
+            {totals.steps > 1 && <TotalsLine className="my-1 text-muted" totals={totals} />}
+            {callEntries}
+            {calls.length === 0 && <Pending />}
+          </>
+        ) : (
+          <>
+            {calls.length > 0 && (
+              <Disclosure className="my-1" summary={<TotalsLine totals={totals} />}>
+                {() => <div className={nested}>{callEntries}</div>}
+              </Disclosure>
+            )}
+            {turn.reply ? <Markdown className="my-1" text={turn.reply} /> : turn.status === 'done' && <div className="text-sm text-muted">（返答はありません）</div>}
           </>
         )}
         {turn.status === 'aborted' && <div className="text-sm text-muted">中断しました</div>}
-        {turnError && !root?.error && <ErrorNote>{turnError}</ErrorNote>}
+        {turnError && <ErrorNote>{turnError}</ErrorNote>}
       </div>
       <div className={messageActions}>
-        {root && root.status !== 'running' && responseText(root) && <CopyButton text={responseText(root)} />}
+        {turn.reply && <CopyButton text={turn.reply} />}
         <button type="button" onClick={() => showTurnGraph(turn.id)}>
           実行時のグラフ
         </button>
@@ -122,62 +132,45 @@ function UserTextEditor({ turn, busy, onClose }: { turn: TurnRecord; busy: boole
   );
 }
 
+/** フローから呼ばれた呼び出し。ノード名の見出しの下に中身を展開して見せる */
+function FlowCall({ call, graph }: { call: CallView; graph: GraphDefinition }) {
+  return (
+    <div className="my-1">
+      <div className="text-sm text-muted">
+        <StatusDot status={call.status} />
+        {nodeTitle(graph, call.nodeId)}
+      </div>
+      <CallBody call={call} graph={graph} />
+    </div>
+  );
+}
+
 /**
- * AI側の応答欄。LLM へのリクエストとツール呼び出しを時系列に並べる。
- * 応答が終わったら、それらは集計の折りたたみに収め、最後のステップのテキストだけを応答として見せる。
- * stages はこの呼び出しより前に実行したフローの段で、内訳の先頭に並べる。totals は stages も含めた集計
+ * 呼び出しの中身。エージェントなら LLM へのリクエストとツール呼び出しを時系列に並べ、
+ * それ以外のノードは返した出力を見せる
  */
-function CallBody({ call, graph, stages = [], totals = call.totals }: { call: CallView; graph: GraphDefinition; stages?: ToolCallView[]; totals?: Totals }) {
-  const last = call.steps.at(-1);
-  const stageEntries = stages.map((stage) => <ToolCall key={stage.toolCallId} tool={stage} graph={graph} />);
+function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
   return (
     <>
-      {/* 応答待ち中 */}
-      {call.status === 'running' && (
-        <>
-          {totals.steps > 1 && (
-            <TotalsLine className="my-1 text-muted" totals={totals} />
-          )}
-          {stageEntries}
-          {call.steps.map((step) => (
-            <Step key={step.index} callId={call.callId} step={step} withText graph={graph} />
-          ))}
-          {!last && <Pending />}
-        </>
-      )}
-
-      {/* 応答完了時 */}
-      {last && call.status !== 'running' && (
-        <>
-          <Disclosure className="my-1" summary={<TotalsLine totals={totals} />}>
-            {() => (
-              <div className={nested}>
-                {stageEntries}
-                {call.steps.map((step) => (
-                  <Step key={step.index} callId={call.callId} step={step} withText={step !== last} graph={graph} />
-                ))}
-              </div>
-            )}
-          </Disclosure>
-          {last.record?.text && <StepText record={last.record} />}
-        </>
-      )}
-
-      <Notes notes={call.notes} />
+      {call.steps.map((step) => (
+        <Step key={step.index} callId={call.callId} step={step} graph={graph} />
+      ))}
+      {call.steps.length === 0 && (call.status === 'running' ? <Pending /> : call.output !== null && !call.error && <ValueBlock value={call.output} />)}
+      <Notes notes={call.notes} graph={graph} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
     </>
   );
 }
 
 /** LLM への1リクエスト分。内訳の行、応答のテキスト、その応答で行ったツールコールの順に並べる */
-function Step({ callId, step, withText, graph }: { callId: string; step: StepView; withText: boolean; graph: GraphDefinition }) {
+function Step({ callId, step, graph }: { callId: string; step: StepView; graph: GraphDefinition }) {
   const { record } = step;
   // 生成中のテキストは結果が届いていないステップだけが読む。届いたステップは text.delta のたびに描画し直さずに済む
   const liveText = useSession((s) => (record ? undefined : s.liveText[callId]));
   return (
     <>
       <StepEntry step={step} />
-      {withText && record?.text && <StepText record={record} />}
+      {record?.text && <StepText record={record} />}
       {liveText && <Markdown className="my-1 text-muted" text={liveText} />}
       {step.tools.map((tool) => (
         <ToolCall key={tool.toolCallId} tool={tool} graph={graph} />
@@ -222,9 +215,9 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
     const label = (
       <>
         {nodeTitle(graph, child.nodeId)}
-        {child.task && (
+        {child.input && (
           <>
-            : <span className="text-ink">{excerpt(child.task)}</span>
+            : <span className="text-ink">{excerpt(child.input)}</span>
           </>
         )}
       </>
@@ -233,7 +226,7 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
       <Entry status={child.status} label={label} metrics={metrics}>
         {() => (
           <>
-            <Notes notes={tool.notes} />
+            <Notes notes={tool.notes} graph={graph} />
             <CallBody call={child} graph={graph} />
           </>
         )}
@@ -246,7 +239,7 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
         <>
           <ValueBlock value={tool.input} />
           {result && <ValueBlock value={result.output} />}
-          <Notes notes={tool.notes} />
+          <Notes notes={tool.notes} graph={graph} />
         </>
       )}
     </Entry>
@@ -282,7 +275,7 @@ function Entry({ status, label, metrics, children }: { status: RunStatus; label:
 const nested = 'my-1 ml-1 border-l-2 pl-3';
 
 /** ログやファイルの変更の記録 */
-function Notes({ notes }: { notes: CallNote[] }) {
+function Notes({ notes, graph }: { notes: CallNote[]; graph: GraphDefinition }) {
   return notes.map((note, i) =>
     note.type === 'log' ? (
       <div key={i} className={`text-sm ${logColors[note.level]}`}>
@@ -290,7 +283,7 @@ function Notes({ notes }: { notes: CallNote[] }) {
       </div>
     ) : (
       <div key={i} className="text-sm text-muted">
-        {note.deleted ? '削除' : '書き込み'} {note.volume}:{note.path}
+        {note.deleted ? '削除' : '書き込み'} {nodeTitle(graph, note.filesNodeId)}:{note.path}
       </div>
     ),
   );
@@ -313,15 +306,10 @@ const statusDotColors: Record<RunStatus, string> = {
   aborted: 'bg-warn',
 };
 
-/** 長い指示を1行に収まる程度に切り詰める。フローの段では前段の出力がそのまま指示になり長くなりやすい */
+/** 長い入力を1行に収まる程度に切り詰める */
 function excerpt(text: string): string {
   const firstLine = text.split('\n', 1)[0];
   return firstLine.length > 80 || firstLine !== text ? `${firstLine.slice(0, 80)}…` : text;
-}
-
-/** 呼び出しの応答として見せたテキスト。ツールコールやサブエージェントの中身は含めない */
-function responseText(call: CallView): string {
-  return call.steps.flatMap((step) => (step.record?.text ? [step.record.text] : [])).join('\n\n');
 }
 
 function finishErrorOf(events: RunEvent[] | undefined): string | null {

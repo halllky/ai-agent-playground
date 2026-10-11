@@ -3,7 +3,7 @@ import { Allotment } from 'allotment';
 import { ChatPanel } from './chat/ChatPanel.tsx';
 import { FilePanel } from './files/FilePanel.tsx';
 import { GraphPanel } from './graph/GraphPanel.tsx';
-import { saveGraphs, useSession } from './session/store.ts';
+import { hasUnsavedGraph, saveGraph, useSession } from './session/store.ts';
 import { TopBar } from './session/TopBar.tsx';
 
 /** 画面全体のレイアウト */
@@ -35,10 +35,10 @@ function useGraphSaveShortcuts(): void {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') return;
       e.preventDefault();
-      void saveGraphs();
+      void saveGraph();
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (Object.keys(useSession.getState().unsavedGraphs).length > 0) e.preventDefault();
+      if (hasUnsavedGraph(useSession.getState())) e.preventDefault();
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('beforeunload', onBeforeUnload);

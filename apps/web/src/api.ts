@@ -1,24 +1,19 @@
-import type { FileEntry, GraphDefinition, GraphRecord, ModelInfo, ModelProvider, RunEvent, SessionDetail, SessionRecord, TurnRecord } from 'protocol';
+import type { GraphDefinition, ModelInfo, ModelProvider, RunEvent, SessionDetail, SessionRecord, TurnFiles, TurnRecord } from 'protocol';
 
 /** サーバー API の呼び出し。失敗はレスポンス本文をメッセージにした Error で投げる */
 export const api = {
-  graphs: () => request<GraphRecord[]>('GET', '/graphs'),
-  createGraph: (name: string, definition?: GraphDefinition) => request<GraphRecord>('POST', '/graphs', { name, definition }),
-  updateGraph: (id: string, patch: { name?: string; definition?: GraphDefinition }) => request<GraphRecord>('PUT', `/graphs/${id}`, patch),
-  /** グラフと、それを参照しているセッションを消す */
-  deleteGraph: (id: string) => request<void>('DELETE', `/graphs/${id}`),
-
   sessions: () => request<SessionRecord[]>('GET', '/sessions'),
   session: (id: string) => request<SessionDetail>('GET', `/sessions/${id}`),
-  createSession: (graphId: string) => request<SessionRecord>('POST', '/sessions', { graphId }),
-  updateSession: (id: string, patch: { graphId?: string; activeTurnId?: string | null }) =>
+  /** copyFrom のセッションのグラフを写した新しいセッションを作る。省略すると既定のグラフ */
+  createSession: (copyFrom?: string) => request<SessionRecord>('POST', '/sessions', { copyFrom }),
+  updateSession: (id: string, patch: { graph?: GraphDefinition; activeTurnId?: string | null }) =>
     request<SessionRecord>('PUT', `/sessions/${id}`, patch),
+  /** セッションを会話ごと消す */
+  deleteSession: (id: string) => request<void>('DELETE', `/sessions/${id}`),
   createTurn: (sessionId: string, parentTurnId: string | null, userText: string) =>
     request<TurnRecord>('POST', `/sessions/${sessionId}/turns`, { parentTurnId, userText }),
   abortTurn: (turnId: string) => request<void>('POST', `/turns/${turnId}/abort`),
-  turnFiles: (turnId: string) => request<FileEntry[]>('GET', `/turns/${turnId}/files`),
-  fileContent: (turnId: string, file: { volume: string; path: string }) =>
-    request<{ content: string }>('GET', `/turns/${turnId}/files/content?${new URLSearchParams(file)}`),
+  turnFiles: (turnId: string) => request<TurnFiles>('GET', `/turns/${turnId}/files`),
 
   models: (provider: ModelProvider) => request<ModelInfo[]>('GET', `/models/${provider}`),
 

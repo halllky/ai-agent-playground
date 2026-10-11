@@ -1,19 +1,19 @@
 import { create } from 'zustand';
-import { modelProviders, type GraphDefinition, type GraphRecord, type ModelInfo, type ModelProvider, type RunEvent, type SessionRecord, type TurnRecord } from 'protocol';
+import { modelProviders, type GraphDefinition, type ModelInfo, type ModelProvider, type RunEvent, type SessionRecord, type TurnRecord } from 'protocol';
 import { api } from '../api.ts';
 
 type State = {
-  graphs: GraphRecord[];
   sessions: SessionRecord[];
   /** プロバイダごとのモデル一覧。取得前・取得失敗時は無い */
   models: Partial<Record<ModelProvider, ModelInfo[]>>;
   /** プロバイダごとの、モデル一覧を取得できなかった理由 */
   modelErrors: Partial<Record<ModelProvider, string>>;
-  /** 編集中のグラフ。セッションを開いているときはそのセッションが参照するグラフ */
-  graphId: string | null;
-  /** 未保存の変更があるグラフの ID から、そのグラフを最後に保存したときの構成へ */
-  unsavedGraphs: Record<string, GraphDefinition>;
+  /** 開いているセッション。読み込みが終わるまでは null */
   sessionId: string | null;
+  /** 編集中のグラフ。savedGraph と同じ参照なら未保存の変更は無い */
+  graph: GraphDefinition | null;
+  /** セッションに最後に保存したグラフ */
+  savedGraph: GraphDefinition | null;
   turns: TurnRecord[];
   activeTurnId: string | null;
   /** グラフ欄に実行時のグラフを表示しているターン。null なら編集中のグラフを表示する */
@@ -25,37 +25,39 @@ type State = {
   error: string | null;
 };
 
-const initialState: State = {
-  graphs: [],
+/**
+ * 画面全体で共有する、セッション・グラフ・実行状況の状態。
+ * 書き換えはこのモジュールの操作関数を通して行い、サーバーとの同期もそこで行う。
+ * 操作関数はサーバーとの通信の失敗を例外にせず、error に入れて表示に回す。
+ * 未保存のグラフの変更は、セッションの切り替え・作成と発言の送信の前に保存する。
+ */
+export const useSession = create<State>(() => ({
   sessions: [],
   models: {},
   modelErrors: {},
-  graphId: null,
-  unsavedGraphs: {},
   sessionId: null,
+  graph: null,
+  savedGraph: null,
   turns: [],
   activeTurnId: null,
   viewingTurnId: null,
   events: {},
   liveText: {},
   error: null,
-};
+}));
 
-/**
- * 画面全体で共有する、グラフ・セッション・実行状況の状態。
- * 書き換えはこのモジュールの操作関数を通して行い、サーバーとの同期もそこで行う。
- * 操作関数はサーバーとの通信の失敗を例外にせず、error に入れて表示に回す。
- */
-export const useSession = create<State>(() => initialState);
+/** 未保存のグラフの変更があるか */
+export function hasUnsavedGraph(s: State): boolean {
+  return s.graph !== s.savedGraph;
+}
 
-/** 画面を開いたときの読み込み。グラフが1つもなければ既定のグラフを作る */
+/** 画面を開いたときの読み込み。セッションが1つもなければ作る */
 export async function initialize(): Promise<void> {
   await report(async () => {
-    let graphs = await api.graphs();
-    if (graphs.length === 0) graphs = [await api.createGraph('Default')];
-    const sessions = await api.sessions();
-    useSession.setState({ graphs, sessions, graphId: graphs[0].id });
-    if (sessions[0]) await openSession(sessions[0].id);
+    let sessions = await api.sessions();
+    if (sessions.length === 0) sessions = [await api.createSession()];
+    useSession.setState({ sessions });
+    await openSession(sessions[0].id);
   });
   // 使わないプロバイダのキーは未設定のことがあるので、取得失敗は画面全体のエラーにしない
   for (const provider of modelProviders) {
@@ -66,18 +68,16 @@ export async function initialize(): Promise<void> {
   }
 }
 
-/** セッションを開き、表示中の分岐のイベントを購読する。null ならセッションを開いていない状態にする */
-export async function openSession(sessionId: string | null): Promise<void> {
+/** セッションを開き、表示中の分岐のイベントを購読する */
+export async function openSession(sessionId: string): Promise<void> {
+  if (!(await saveGraph())) return;
   stopFollowingAll();
-  if (!sessionId) {
-    useSession.setState({ sessionId: null, turns: [], activeTurnId: null, viewingTurnId: null, events: {}, liveText: {} });
-    return;
-  }
   await report(async () => {
     const detail = await api.session(sessionId);
     useSession.setState({
       sessionId,
-      graphId: detail.graphId,
+      graph: detail.graph,
+      savedGraph: detail.graph,
       turns: detail.turns,
       activeTurnId: detail.activeTurnId,
       viewingTurnId: null,
@@ -88,114 +88,61 @@ export async function openSession(sessionId: string | null): Promise<void> {
   });
 }
 
-/** 編集中のグラフを参照する新しいセッションを作って開く */
+/** 開いているセッションのグラフを写した、新しいセッションを作って開く */
 export async function createSession(): Promise<void> {
-  const { graphId } = useSession.getState();
-  if (!graphId) return;
+  if (!(await saveGraph())) return;
   await report(async () => {
-    const session = await api.createSession(graphId);
+    const session = await api.createSession(useSession.getState().sessionId ?? undefined);
     useSession.setState((s) => ({ sessions: [session, ...s.sessions] }));
     await openSession(session.id);
   });
 }
 
-/** 編集対象のグラフを切り替える。セッションを開いていれば、そのセッションの参照先も切り替える */
-export async function selectGraph(graphId: string): Promise<void> {
-  const { sessionId } = useSession.getState();
-  await report(async () => {
-    if (sessionId) {
-      const session = await api.updateSession(sessionId, { graphId });
-      useSession.setState((s) => ({ sessions: s.sessions.map((x) => (x.id === session.id ? session : x)) }));
-    }
-    useSession.setState({ graphId });
-  });
-}
-
-/** 新しいグラフを作って編集対象にする。definition を渡さなければ既定の構成 */
-export async function createGraph(name: string, definition?: GraphDefinition): Promise<void> {
-  await report(async () => {
-    const graph = await api.createGraph(name, definition);
-    useSession.setState((s) => ({ graphs: [...s.graphs, graph].sort((a, b) => a.name.localeCompare(b.name)) }));
-    await selectGraph(graph.id);
-  });
-}
-
-/** グラフの名前を変える。編集対象は切り替えず、構成の未保存の変更もそのまま残す */
-export async function renameGraph(graphId: string, name: string): Promise<void> {
-  await report(async () => {
-    const graph = await api.updateGraph(graphId, { name });
-    useSession.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graph.id ? { ...graph, definition: g.definition } : g)) }));
-  });
-}
-
 /**
- * グラフを、それを参照しているセッションごと消す。
- * 開いていたセッションが消えたらセッションを閉じ、編集対象が消えたら残ったグラフの先頭を編集対象にする
+ * 開いているセッションを、未保存のグラフの変更ごと消し、残ったセッションの先頭を開く。
+ * 1つも残らなければ既定のグラフのセッションを作って開く
  */
-export async function deleteGraph(graphId: string): Promise<void> {
+export async function deleteSession(): Promise<void> {
+  const { sessionId } = useSession.getState();
+  if (!sessionId) return;
   await report(async () => {
-    await api.deleteGraph(graphId);
-    const { sessionId, sessions } = useSession.getState();
-    if (sessions.some((s) => s.id === sessionId && s.graphId === graphId)) await openSession(null);
-    useSession.setState((s) => {
-      const { [graphId]: _, ...unsavedGraphs } = s.unsavedGraphs;
-      const graphs = s.graphs.filter((g) => g.id !== graphId);
-      return {
-        graphs,
-        unsavedGraphs,
-        sessions: s.sessions.filter((x) => x.graphId !== graphId),
-        graphId: s.graphId === graphId ? (graphs[0]?.id ?? null) : s.graphId,
-      };
-    });
+    await api.deleteSession(sessionId);
+    const sessions = useSession.getState().sessions.filter((s) => s.id !== sessionId);
+    if (sessions.length === 0) sessions.push(await api.createSession());
+    // 消したセッションへ未保存の変更を保存しに行かないよう、開いていない状態にしてから開き直す
+    useSession.setState({ sessions, sessionId: null, graph: null, savedGraph: null });
+    await openSession(sessions[0].id);
   });
 }
 
-/** 編集中のグラフ構成を書き換える。サーバーへは保存せず、未保存の変更として持つ */
-export function updateGraphDefinition(update: (definition: GraphDefinition) => GraphDefinition): void {
-  const { graphId, graphs, unsavedGraphs } = useSession.getState();
-  const graph = graphs.find((g) => g.id === graphId);
-  if (!graph) return;
-  const definition = update(graph.definition);
-  useSession.setState({
-    graphs: graphs.map((g) => (g.id === graph.id ? { ...g, definition } : g)),
-    unsavedGraphs: graph.id in unsavedGraphs ? unsavedGraphs : { ...unsavedGraphs, [graph.id]: graph.definition },
-  });
+/** 編集中のグラフを書き換える。サーバーへは保存せず、未保存の変更として持つ */
+export function updateGraph(update: (graph: GraphDefinition) => GraphDefinition): void {
+  useSession.setState((s) => (s.graph ? { graph: update(s.graph) } : {}));
 }
 
-/** 未保存の変更があるグラフをすべて保存する。1つでも保存できなければ false */
-export async function saveGraphs(): Promise<boolean> {
-  const results = await Promise.all(
-    Object.keys(useSession.getState().unsavedGraphs).map(async (graphId) => {
-      const definition = useSession.getState().graphs.find((g) => g.id === graphId)?.definition;
-      if (!definition) return true;
-      const saved = await report(() => api.updateGraph(graphId, { definition }));
-      if (!saved) return false;
-      useSession.setState((s) => {
-        const { [graphId]: _, ...rest } = s.unsavedGraphs;
-        // 保存中にさらに編集されていたら、送った構成を最後に保存した構成として未保存のまま残す
-        const current = s.graphs.find((g) => g.id === graphId)?.definition;
-        return { unsavedGraphs: current === definition ? rest : { ...rest, [graphId]: definition } };
-      });
-      return true;
-    }),
-  );
-  return results.every((ok) => ok);
+/** 未保存の変更があればセッションに保存する。保存できなければ false */
+export async function saveGraph(): Promise<boolean> {
+  const { sessionId, graph, savedGraph } = useSession.getState();
+  if (!sessionId || !graph || graph === savedGraph) return true;
+  const saved = await report(() => api.updateSession(sessionId, { graph }));
+  if (!saved) return false;
+  // 保存中にさらに編集されていたら、その分は未保存のまま残る
+  useSession.setState({ savedGraph: graph });
+  return true;
 }
 
 /** グラフの未保存の変更を捨て、最後に保存した構成に戻す */
-export function discardGraphChanges(graphId: string): void {
-  useSession.setState((s) => {
-    if (!(graphId in s.unsavedGraphs)) return {};
-    const { [graphId]: saved, ...rest } = s.unsavedGraphs;
-    return { graphs: s.graphs.map((g) => (g.id === graphId ? { ...g, definition: saved } : g)), unsavedGraphs: rest };
-  });
+export function discardGraphChanges(): void {
+  useSession.setState((s) => ({ graph: s.savedGraph }));
 }
 
-/** 表示中の分岐の末尾に発言を追加して実行する。セッションがなければ作る */
+/** turn の実行時のグラフを、編集中のグラフとして読み込む。保存するまではセッションに反映しない */
+export function loadTurnGraph(turn: TurnRecord): void {
+  useSession.setState({ graph: turn.graph, viewingTurnId: null });
+}
+
+/** 表示中の分岐の末尾に発言を追加して実行する */
 export async function send(userText: string): Promise<void> {
-  // 実行はサーバー上の現在のグラフで行われるため、未保存の編集を先に保存する
-  if (!(await saveGraphs())) return;
-  if (!useSession.getState().sessionId) await createSession();
   await startTurn(useSession.getState().activeTurnId, userText);
 }
 
@@ -204,7 +151,6 @@ export async function send(userText: string): Promise<void> {
  * userText を省略すると同じ発言で再実行し、渡すとその発言に書き換えて再送信する。
  */
 export async function branchFrom(turn: TurnRecord, userText = turn.userText): Promise<void> {
-  if (!(await saveGraphs())) return;
   await startTurn(turn.parentTurnId, userText);
 }
 
@@ -248,7 +194,9 @@ export function turnPath(turns: TurnRecord[], activeTurnId: string | null): Turn
   return path;
 }
 
+/** 実行はサーバー上のセッションのグラフで行われるため、未保存の編集を先に保存する */
 async function startTurn(parentTurnId: string | null, userText: string): Promise<void> {
+  if (!(await saveGraph())) return;
   const { sessionId } = useSession.getState();
   if (!sessionId) return;
   await report(async () => {
@@ -283,17 +231,18 @@ function stopFollowingAll(): void {
 function receive(event: RunEvent): void {
   useSession.setState((s) => {
     if (event.type === 'text.delta') {
-      return { liveText: { ...s.liveText, [event.callId]: (s.liveText[event.callId] ?? '') + event.text } };
+      const callId = event.callId!;
+      return { liveText: { ...s.liveText, [callId]: (s.liveText[callId] ?? '') + event.text } };
     }
     const received = s.events[event.turnId] ?? [];
     // 再接続で再生し直されたイベントを重複して取り込まない
     if (event.seq! <= (received.at(-1)?.seq ?? 0)) return {};
     const next: Partial<State> = { events: { ...s.events, [event.turnId]: [...received, event] } };
-    if (event.type === 'step.finish' || event.type === 'call.finish') {
+    if ((event.type === 'step.finish' || event.type === 'call.finish') && event.callId) {
       next.liveText = { ...s.liveText, [event.callId]: '' };
     }
     if (event.type === 'turn.finish') {
-      next.turns = s.turns.map((t) => (t.id === event.turnId ? { ...t, status: event.status } : t));
+      next.turns = s.turns.map((t) => (t.id === event.turnId ? { ...t, status: event.status, reply: event.reply } : t));
       following.delete(event.turnId);
     }
     return next;

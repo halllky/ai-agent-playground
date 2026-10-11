@@ -1,6 +1,4 @@
 import { choice, noul, score, TypeSafeClient, type Question, type Questions, type ResultFor, type ScoreCriteria } from '@typesafe-ai/sdk';
-import { tool, type Tool } from 'ai';
-import { z } from 'zod';
 import { judgeQuestionTypeLabels, type FlowCondition, type JudgeQuestion, type NodeOf } from 'protocol';
 
 /** Jev が一度に受け付ける、state と質問を合わせた入力の目安 */
@@ -8,18 +6,6 @@ const maxInputTokens = 32_000;
 
 /** 判定1回分の結果。answers は質問の key ごとの回答 */
 export type Verdict = Awaited<ReturnType<typeof judge>>;
-
-/**
- * 判定ノードに定義した質問を、呼び出し元が渡した state について Jev に答えさせるツール。
- * 質問文はツールの説明に載せ、回答には含めない（会話履歴に毎回積まれてノイズになるため）。
- */
-export function judgeTool(node: NodeOf<'judge'>): Tool {
-  return tool({
-    description: descriptionOf(node),
-    inputSchema: z.object({ state: z.string().describe('判定してほしい内容。文章か JSON') }),
-    execute: ({ state }, { abortSignal }) => judge(node, state, abortSignal),
-  });
-}
 
 /**
  * 判定ノードに定義した質問に、state について Jev に答えさせる。
@@ -52,12 +38,16 @@ export function meetsCondition(node: NodeOf<'judge'>, verdict: Verdict, conditio
   return condition.anyOf.includes(decidedValueOf(answer));
 }
 
-function descriptionOf(node: NodeOf<'judge'>): string {
+/**
+ * 判定ノードをツールとして使わせるときの説明。
+ * 質問文はツールの説明に載せ、回答には含めない（会話履歴に毎回積まれてノイズになるため）
+ */
+export function describeJudge(node: NodeOf<'judge'>): string {
   const questions = node.config.questions.map((q) => `- ${q.key}（${judgeQuestionTypeLabels[q.type]}）: ${q.instructions}`);
   return [
     node.config.description || '渡した state について、あらかじめ決められた質問に確率付きで答える',
     '',
-    '質問（回答は answers の同じキーに入る）:',
+    '質問（回答は質問の名前をキーにした JSON で返る）:',
     ...questions,
     '',
     'probabilityOfYes や probability は「その答えである確率」であり、程度や度合いではない。',

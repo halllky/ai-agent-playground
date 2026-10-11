@@ -17,35 +17,36 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import {
+  canConnect,
   createEdge,
   createNode,
   diagnoseGraph,
-  edgeKindBetween,
-  laneOf,
+  nodeRoles,
   removeEdges,
   removeNodes,
+  type EdgeKind,
   type GraphDefinition,
-  type GraphEdge,
   type GraphNode,
   type GraphWarning,
   type NodeKind,
   type TurnRecord,
 } from 'protocol';
-import { createGraph, showTurnGraph, updateGraphDefinition, useSession } from '../session/store.ts';
+import { loadTurnGraph, showTurnGraph, updateGraph, useSession } from '../session/store.ts';
 import { EmptyNote } from '../ui/primitives.tsx';
 import { Hint, NumberField } from './fields.tsx';
-import { addableNodeKinds, edgeKindView, nodeKindView, nodeKindViews } from './kinds.tsx';
+import { addableNodeKinds, edgeKindView, nodeKindView, nodeKindViews, nodeName } from './kinds.tsx';
 
 /**
  * 編集中のグラフのキャンバスとインスペクタ。
  * ターンの実行時のグラフを表示しているときは、読み取り専用で表示する。
  */
 export function GraphPanel() {
-  const graph = useSession((s) => s.graphs.find((g) => g.id === s.graphId));
+  const graph = useSession((s) => s.graph);
+  const sessionId = useSession((s) => s.sessionId);
   const viewingTurn = useSession((s) => s.turns.find((t) => t.id === s.viewingTurnId));
   const models = useSession((s) => s.models);
   const [selection, setSelection] = useState<Selection>(null);
-  const definition = viewingTurn?.graph ?? graph?.definition;
+  const definition = viewingTurn?.graph ?? graph;
   const warnings = useMemo(() => (definition ? diagnoseGraph(definition, models) : []), [definition, models]);
   if (!definition) return <EmptyNote>グラフがありません</EmptyNote>;
 
@@ -57,7 +58,7 @@ export function GraphPanel() {
         <Allotment vertical defaultSizes={[65, 35]}>
           <Allotment.Pane minSize={120}>
             {/* 表示するグラフを切り替えたときに表示範囲を合わせ直すため、グラフごとに作り直す */}
-            <ReactFlowProvider key={viewingTurn?.id ?? graph?.id}>
+            <ReactFlowProvider key={viewingTurn?.id ?? sessionId}>
               <Canvas definition={definition} warnings={warnings} readOnly={readOnly} selection={selection} onSelect={setSelection} />
             </ReactFlowProvider>
           </Allotment.Pane>
@@ -71,18 +72,14 @@ export function GraphPanel() {
 }
 
 function TurnGraphBanner({ turn }: { turn: TurnRecord }) {
-  const duplicate = () => {
-    const name = prompt('複製先の名前', 'ターンのグラフ');
-    if (!name) return;
-    showTurnGraph(null);
-    void createGraph(name, turn.graph);
-  };
   return (
     <div className="flex items-center gap-1.5 border-b bg-highlight px-2 py-1">
       <span className="min-w-0 flex-1 truncate" title={turn.userText}>
         「{turn.userText}」の実行時のグラフ（読み取り専用）
       </span>
-      <button onClick={duplicate}>複製して編集</button>
+      <button title="保存するまではセッションに反映しません" onClick={() => loadTurnGraph(turn)}>
+        このグラフを編集する
+      </button>
       <button onClick={() => showTurnGraph(null)}>現在のグラフに戻る</button>
     </div>
   );
@@ -115,31 +112,30 @@ function Canvas(props: {
       type: 'graphNode',
       position: node.position,
       measured: measured[node.id],
-      deletable: !nodeKindView(node).single,
+      deletable: node.kind !== 'user',
       selected: selection !== null && 'nodeId' in selection && selection.nodeId === node.id,
       data: { node, warnings: warningsFor(warnings, { nodeId: node.id }) },
     }),
   );
   const edges = definition.edges.map((edge): Edge => {
-    const lane = laneOf(edge.kind);
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      sourceHandle: lane,
-      targetHandle: lane,
-      label: edgeKindView(edge).label(edge) || undefined,
+      sourceHandle: edge.kind,
+      targetHandle: edge.kind,
+      label: edgeKindView(edge).label(edge, definition.nodes.find((n) => n.id === edge.target)) || undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
       // React Flow が選択中などに付ける線の色より、警告の色を優先する
-      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? '[&_path]:stroke-warn!' : lane === 'flow' ? '[&_path]:stroke-accent' : undefined,
+      className: warningsFor(warnings, { edgeId: edge.id }).length > 0 ? '[&_path]:stroke-warn!' : edge.kind === 'flow' ? '[&_path]:stroke-accent' : undefined,
     };
   });
 
   const addNode = (kind: NodeKind) => {
     const id = crypto.randomUUID();
     const position = screenToFlowPosition({ x: 120, y: 120 });
-    updateGraphDefinition((d) => ({ ...d, nodes: [...d.nodes, createNode(kind, id, position)] }));
+    updateGraph((d) => ({ ...d, nodes: [...d.nodes, createNode(kind, id, position)] }));
     onSelect({ nodeId: id });
   };
 
@@ -174,21 +170,21 @@ function Canvas(props: {
           }
           const positions = new Map(changes.flatMap((c) => (c.type === 'position' && c.position ? [[c.id, c.position] as const] : [])));
           if (positions.size > 0) {
-            updateGraphDefinition((d) => ({ ...d, nodes: d.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })) }));
+            updateGraph((d) => ({ ...d, nodes: d.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })) }));
           }
           const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
-          if (removed.length > 0) updateGraphDefinition((d) => removeNodes(d, removed));
+          if (removed.length > 0) updateGraph((d) => removeNodes(d, removed));
         }}
         onEdgesChange={(changes) => {
           for (const c of changes) {
             if (c.type === 'select') onSelect(selectionAfter(c.id, c.selected, (id) => ({ edgeId: id })));
           }
           const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
-          if (removed.length > 0) updateGraphDefinition((d) => removeEdges(d, removed));
+          if (removed.length > 0) updateGraph((d) => removeEdges(d, removed));
         }}
         isValidConnection={(connection) => connectionKind(definition, connection) !== undefined}
         onConnect={(connection) => {
-          updateGraphDefinition((d) => {
+          updateGraph((d) => {
             const kind = connectionKind(d, connection);
             if (!kind) return d;
             return { ...d, edges: [...d.edges, createEdge(kind, crypto.randomUUID(), connection.source, connection.target)] };
@@ -211,14 +207,14 @@ function Canvas(props: {
 
 /**
  * 接続口どうしをつないだときにできるエッジの種類。つなげない、または同じ種類のエッジが既にあれば undefined。
- * 接続口の id はエッジの系統（tools / flow）で、系統の違う接続口どうしはつなげない
+ * 接続口の id はエッジの種類で、種類の違う接続口どうしはつなげない
  */
-function connectionKind(definition: GraphDefinition, connection: Connection | Edge): GraphEdge['kind'] | undefined {
-  const lane = connection.sourceHandle === 'flow' ? 'flow' : 'tools';
-  if ((connection.targetHandle ?? 'tools') !== lane) return undefined;
+function connectionKind(definition: GraphDefinition, connection: Connection | Edge): EdgeKind | undefined {
+  const kind: EdgeKind = connection.sourceHandle === 'flow' ? 'flow' : 'tool';
+  if (connection.targetHandle !== kind) return undefined;
   const source = definition.nodes.find((n) => n.id === connection.source);
   const target = definition.nodes.find((n) => n.id === connection.target);
-  const kind = source && target ? edgeKindBetween(source, target, lane) : undefined;
+  if (!source || !target || !canConnect(source, target, kind)) return undefined;
   const duplicate = definition.edges.some((e) => e.source === connection.source && e.target === connection.target && e.kind === kind);
   return duplicate ? undefined : kind;
 }
@@ -238,24 +234,25 @@ function selectionAfter(id: string, selected: boolean, toSelection: (id: string)
 
 function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
   const view = nodeKindView(data.node);
+  const roles = nodeRoles[data.node.kind];
   return (
     <div
-      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${data.node.kind === 'mainAgent' ? 'border-2' : 'border'} ${
+      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${data.node.kind === 'user' ? 'border-2' : 'border'} ${
         selected ? 'border-accent ring-1 ring-accent' : ''
       }`}
     >
-      {view.acceptsIncoming && <Handle id="tools" type="target" position={Position.Top} />}
-      {view.flowIn && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
+      {roles.isTool && <Handle id="tool" type="target" position={Position.Top} />}
+      {roles.inFlow && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
       <div className="text-2xs text-muted">{view.label}</div>
-      <div className="font-semibold">{view.title(data.node)}</div>
+      <div className="font-semibold">{nodeName(data.node)}</div>
       <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>
       {data.warnings.length > 0 && (
         <div className="mt-1 text-xs text-warn" title={data.warnings.join('\n')}>
           ⚠ {data.warnings.length}
         </div>
       )}
-      {view.emitsOutgoing && <Handle id="tools" type="source" position={Position.Bottom} />}
-      {view.flowOut && <Handle id="flow" type="source" position={Position.Right} className={flowHandle} />}
+      {roles.usesTools && <Handle id="tool" type="source" position={Position.Bottom} />}
+      {roles.inFlow && <Handle id="flow" type="source" position={Position.Right} className={flowHandle} />}
     </div>
   );
 }
@@ -282,10 +279,10 @@ function Inspector(props: {
         <InspectorHeader
           title={view.label}
           onDelete={
-            view.single
+            node.kind === 'user'
               ? undefined
               : () => {
-                  updateGraphDefinition((d) => removeNodes(d, [node.id]));
+                  updateGraph((d) => removeNodes(d, [node.id]));
                   onSelect(null);
                 }
           }
@@ -293,7 +290,7 @@ function Inspector(props: {
         <WarningList messages={warningsFor(warnings, { nodeId: node.id })} />
         <view.Inspector
           node={node}
-          onChange={(changed) => updateGraphDefinition((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === changed.id ? changed : n)) }))}
+          onChange={(changed) => updateGraph((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === changed.id ? changed : n)) }))}
         />
       </fieldset>
     );
@@ -305,7 +302,7 @@ function Inspector(props: {
         <InspectorHeader
           title="エッジ"
           onDelete={() => {
-            updateGraphDefinition((d) => removeEdges(d, [edge.id]));
+            updateGraph((d) => removeEdges(d, [edge.id]));
             onSelect(null);
           }}
         />
@@ -314,7 +311,7 @@ function Inspector(props: {
           edge={edge}
           source={definition.nodes.find((n) => n.id === edge.source)}
           target={definition.nodes.find((n) => n.id === edge.target)}
-          onChange={(changed) => updateGraphDefinition((d) => ({ ...d, edges: d.edges.map((e) => (e.id === changed.id ? changed : e)) }))}
+          onChange={(changed) => updateGraph((d) => ({ ...d, edges: d.edges.map((e) => (e.id === changed.id ? changed : e)) }))}
         />
       </fieldset>
     );
@@ -327,7 +324,7 @@ function Inspector(props: {
         label="呼び出しネストの上限"
         min={1}
         value={definition.settings.maxCallDepth}
-        onChange={(maxCallDepth) => updateGraphDefinition((d) => ({ ...d, settings: { ...d.settings, maxCallDepth } }))}
+        onChange={(maxCallDepth) => updateGraph((d) => ({ ...d, settings: { ...d.settings, maxCallDepth } }))}
       />
       <Hint>ノードやエッジを選ぶと設定の編集や削除ができます。選んで Delete / Backspace キーでも削除できます。</Hint>
     </fieldset>

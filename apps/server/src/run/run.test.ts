@@ -3,10 +3,10 @@ import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, LanguageModelV3
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createDefaultGraph,
-  findMainAgent,
+  createNode,
   type AccessPermission,
-  type CallSettings,
+  type EdgeOf,
+  type FlowCondition,
   type GraphDefinition,
   type JudgeQuestion,
   type ModelProvider,
@@ -14,7 +14,7 @@ import {
   type RunEvent,
   type RunEventOf,
 } from 'protocol';
-import { db, graphs, sessions, turns } from '../db/index.ts';
+import { db, sessions } from '../db/index.ts';
 import { abortTurn, followTurn, startTurn } from './index.ts';
 
 /** モデルID ごとに、受け取ったプロンプトから返すストリームを決める台本 */
@@ -54,7 +54,23 @@ vi.mock('@typesafe-ai/sdk', async (importOriginal) => ({
 }));
 
 describe('ターン実行', () => {
-  it('メインからサブエージェントを呼び出し、同じステップの複数ツールコールは逐次実行する', async () => {
+  it('既定の構成では、エージェントの応答が返答になり、次のターンでは前の会話を覚えている', async () => {
+    const seen: string[][] = [];
+    scripts.set('main', (prompt) => {
+      seen.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
+      return streamOf(textParts(`「${userTextOf(prompt)}」への返事`));
+    });
+    const graph = graphWithMain();
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, 'こんにちは', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '覚えてる？', undefined, { sessionId, parentTurnId: first[0].turnId });
+
+    expect(ofType(first, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '「こんにちは」への返事' });
+    expect(seen[1]).toEqual(['こんにちは', '「こんにちは」への返事', '覚えてる？']);
+  });
+
+  it('エージェントから別のエージェントをツールとして呼び出し、同じステップの複数ツールコールは逐次実行する', async () => {
     let running = 0;
     let maxRunning = 0;
     scripts.set('main', (prompt) =>
@@ -68,15 +84,15 @@ describe('ターン実行', () => {
       return delayedStream(textParts('調査結果'), () => running--);
     });
 
-    const events = await runTurn(graphOf({ memory: 'fresh' }), 'こんにちは');
+    const events = await runTurn(graphOf({}), 'こんにちは');
 
     const subStarts = ofType(events, 'call.start').filter((e) => e.nodeId === 'researcher');
     const mainStart = ofType(events, 'call.start').find((e) => e.nodeId === 'main')!;
     expect(subStarts).toHaveLength(2);
-    expect(subStarts.every((e) => e.parentCallId === mainStart.callId && e.depth === 1)).toBe(true);
+    expect(subStarts.every((e) => e.parentCallId === mainStart.callId && e.toolCallId !== null)).toBe(true);
+    expect(mainStart).toMatchObject({ parentCallId: null, toolCallId: null, input: 'こんにちは' });
     expect(maxRunning).toBe(1);
-    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done' });
-    expect(ofType(events, 'step.finish').at(-1)?.step.text).toBe('まとめました');
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: 'まとめました' });
   });
 
   it('ステップのイベントはツールコールを挟んで順に届き、所要時間にツールの実行を含めない', async () => {
@@ -87,7 +103,7 @@ describe('ターン実行', () => {
     );
     scripts.set('sub', () => delayedStream(textParts('調査結果'), () => {}));
 
-    const events = await runTurn(graphOf({ memory: 'fresh' }), 'こんにちは');
+    const events = await runTurn(graphOf({}), 'こんにちは');
 
     const mainCallId = ofType(events, 'call.start').find((e) => e.nodeId === 'main')!.callId;
     const mainEvents = events.filter((e) => e.callId === mainCallId);
@@ -113,34 +129,35 @@ describe('ターン実行', () => {
     scripts.set('sub', () => streamOf(textParts('調査結果')));
     calledModels.length = 0;
 
-    await runTurn(graphOf({ memory: 'fresh' }, 'gemini'), 'こんにちは');
+    await runTurn(graphOf({ provider: 'gemini' }), 'こんにちは');
 
     expect(calledModels).toEqual(['openrouter:main', 'gemini:sub', 'openrouter:main']);
   });
 
-  it('呼び出しのネストが上限に達したら打ち切る', async () => {
+  it('ツールとしての呼び出しのネストが上限に達したら、その呼び出しを失敗にする', async () => {
     scripts.set('main', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('完了')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: 'go' } }])),
     );
     scripts.set('sub', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('戻ります')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: 'deeper' } }])),
     );
-    const graph = graphOf({ memory: 'fresh' });
-    graph.edges.push({ id: 'loop', kind: 'call', source: 'researcher', target: 'researcher', settings: {} });
+    const graph = graphOf({});
+    graph.edges.push(toolEdge('researcher', 'researcher'));
     graph.settings.maxCallDepth = 3;
 
     const events = await runTurn(graph, '再帰して');
 
-    expect(Math.max(...ofType(events, 'call.start').map((e) => e.depth))).toBe(3);
-    expect(ofType(events, 'log').some((e) => e.level === 'warn' && e.message.includes('上限'))).toBe(true);
+    const subFinishes = ofType(events, 'call.finish').filter((e) => e.nodeId === 'researcher');
+    expect(subFinishes).toHaveLength(4);
+    expect(subFinishes.filter((e) => e.status === 'error').map((e) => e.error)).toEqual([expect.stringContaining('上限（3）')]);
     expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done' });
   });
 
-  it('Abort すると実行中のサブエージェントも止まり、途中までの出力が残る', async () => {
+  it('Abort するとツールとして呼び出し中のエージェントも止まり、途中までの出力が残る', async () => {
     scripts.set('main', () => streamOf(toolCallParts([{ name: 'researcher', input: { task: 'ずっと考えて' } }])));
     scripts.set('sub', (_prompt, options) => hangingStream('途中まで', options.abortSignal!));
 
-    const events = await runTurn(graphOf({ memory: 'fresh' }), '長い仕事', (event) => {
+    const events = await runTurn(graphOf({}), '長い仕事', (event) => {
       if (event.type === 'text.delta' && event.nodeId === 'researcher') abortTurn(event.turnId);
     });
 
@@ -156,7 +173,7 @@ describe('ターン実行', () => {
       lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: userTextOf(prompt) } }])),
     );
     scripts.set('sub', (prompt) => {
-      seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => (m.content[0] as { text: string }).text));
+      seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => textOf(m.content)));
       return streamOf(textParts('覚えました'));
     });
     const graph = graphOf({ memory: 'session' });
@@ -169,12 +186,11 @@ describe('ターン実行', () => {
     expect(seenBySub).toEqual([['一つ目'], ['一つ目', '二つ目'], ['別の一つ目']]);
   });
 
-  it('ワークフォルダへの書き込みは同じ分岐の後のターンから読め、別の分岐からは読めない', async () => {
+  it('ファイルへの書き込みは同じ分岐の後のターンから読め、別の分岐からは読めない', async () => {
     scripts.set('main', (prompt) => {
       if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
-      const text = userTextOf(prompt);
       return streamOf(
-        text === '書いて'
+        userTextOf(prompt) === '書いて'
           ? toolCallParts([{ name: 'workfolder_write', input: { path: 'memo.md', content: 'メモ' } }])
           : toolCallParts([{ name: 'workfolder_read', input: { path: 'memo.md' } }]),
       );
@@ -186,7 +202,7 @@ describe('ターン実行', () => {
     const readAfter = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: written[0].turnId });
     const readElsewhere = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: null });
 
-    expect(ofType(written, 'file.change')).toMatchObject([{ volume: 'work', path: 'memo.md', deleted: false, nodeId: 'main' }]);
+    expect(ofType(written, 'file.change')).toMatchObject([{ filesNodeId: 'work', path: 'memo.md', deleted: false, nodeId: 'main' }]);
     expect(ofType(readAfter, 'tool.result')[0]).toMatchObject({ output: 'メモ', isError: false });
     expect(ofType(readElsewhere, 'tool.result')[0]).toMatchObject({ isError: true });
   });
@@ -203,7 +219,7 @@ describe('ターン実行', () => {
     expect(toolNames.sort()).toEqual(['workfolder_list', 'workfolder_read']);
   });
 
-  it('リソースは会話で初めて使うときに設定から写され、編集は分岐ごとに残る', async () => {
+  it('ファイルは会話で初めて使うときに設定から写され、編集は分岐ごとに残る', async () => {
     scripts.set('main', (prompt) => {
       if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
       return streamOf(
@@ -215,11 +231,11 @@ describe('ターン実行', () => {
     const graph = graphWithMain();
     graph.nodes.push({
       id: 'inventory',
-      kind: 'resource',
+      kind: 'files',
       position: { x: 0, y: 0 },
       config: { name: 'inventory', description: '在庫', files: [{ path: 'items.json', content: '{"count":1}' }] },
     });
-    graph.edges.push({ id: 'main-inventory', kind: 'access', source: 'main', target: 'inventory', permission: 'write' });
+    graph.edges.push(toolEdge('main', 'inventory', 'write'));
     const sessionId = createSession(graph);
 
     const edited = await runTurn(graph, '増やして', undefined, { sessionId, parentTurnId: null });
@@ -229,7 +245,7 @@ describe('ターン実行', () => {
     expect(ofType(edited, 'tool.result')[0]).toMatchObject({ isError: false });
     expect(JSON.parse(ofType(readAfter, 'tool.result')[0].output as string)).toEqual({ count: 2 });
     expect(JSON.parse(ofType(readElsewhere, 'tool.result')[0].output as string)).toEqual({ count: 1 });
-    expect(graph.nodes.find((n) => n.kind === 'resource')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });
+    expect(graph.nodes.find((n) => n.kind === 'files')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });
   });
 
   it('Web検索は API キーが無ければツールのエラーとして返す', async () => {
@@ -239,13 +255,14 @@ describe('ターン実行', () => {
     );
     const graph = graphWithMain();
     graph.nodes.push({ id: 'web', kind: 'webSearch', position: { x: 0, y: 0 }, config: { name: 'search', maxResults: 3, searchDepth: 'basic' } });
-    graph.edges.push({ id: 'main-web', kind: 'use', source: 'main', target: 'web' });
+    graph.edges.push(toolEdge('main', 'web'));
 
     const events = await runTurn(graph, '調べて');
     vi.unstubAllEnvs();
 
     expect(ofType(events, 'tool.result')[0]).toMatchObject({ toolName: 'search', isError: true });
     expect(String(ofType(events, 'tool.result')[0].output)).toContain('TAVILY_API_KEY');
+    expect(ofType(events, 'call.start').find((e) => e.nodeId === 'web')).toMatchObject({ input: 'AI SDK' });
   });
 
   it('判定ノードは定義した質問を state と一緒に送り、大きすぎる state は送らない', async () => {
@@ -266,7 +283,7 @@ describe('ターン実行', () => {
         { key: 'severity', type: 'score', instructions: '深刻度', levels: ['軽微', '', '致命的'] },
       ]),
     );
-    graph.edges.push({ id: 'main-triage', kind: 'use', source: 'main', target: 'triage' });
+    graph.edges.push(toolEdge('main', 'triage'));
     judgeRequests.length = 0;
 
     const judged = await runTurn(graph, '本番が落ちています');
@@ -284,35 +301,32 @@ describe('ターン実行', () => {
       },
     ]);
     expect(description).toContain('- urgent（はい/いいえ）: 急ぎか');
-    expect(ofType(judged, 'tool.result')[0]).toMatchObject({
-      isError: false,
-      output: {
-        answers: {
-          urgent: { probabilityOfYes: 0.9, noMeans: '急がない' },
-          kind: {
-            mostLikely: 'bug',
-            choices: [
-              { label: 'bug', probability: 0.8 },
-              { label: 'question', means: '質問', probability: 0.2 },
-            ],
-          },
-          severity: {
-            expectedScore: 1.5,
-            levels: [
-              { score: 0, means: '軽微', probability: 0.1 },
-              { score: 1, probability: 0.3 },
-              { score: 2, means: '致命的', probability: 0.6 },
-            ],
-          },
-        },
+    const result = ofType(judged, 'tool.result')[0];
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output as string)).toEqual({
+      urgent: { probabilityOfYes: 0.9, noMeans: '急がない' },
+      kind: {
+        mostLikely: 'bug',
+        choices: [
+          { label: 'bug', probability: 0.8 },
+          { label: 'question', means: '質問', probability: 0.2 },
+        ],
+      },
+      severity: {
+        expectedScore: 1.5,
+        levels: [
+          { score: 0, means: '軽微', probability: 0.1 },
+          { score: 1, probability: 0.3 },
+          { score: 2, means: '致命的', probability: 0.6 },
+        ],
       },
     });
     // 質問文はツールの説明にだけ載せ、回答には繰り返さない
-    expect(JSON.stringify(ofType(judged, 'tool.result')[0])).not.toContain('急ぎか');
+    expect(String(result.output)).not.toContain('急ぎか');
     expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
   });
 
-  it('親の履歴のみを渡す呼び出しでは、ツールに指示の引数を持たせず、呼び出し元の会話だけを渡す', async () => {
+  it('会話だけを渡すエージェントでは、ツールに指示の引数を持たせず、呼び出し元の会話だけを渡す', async () => {
     let inputSchema: unknown;
     let subPrompt = '';
     scripts.set('main', (prompt, options) => {
@@ -329,10 +343,10 @@ describe('ターン実行', () => {
 
     expect(inputSchema).toMatchObject({ properties: {} });
     expect(subPrompt).toBe('<caller_conversation>\n[user] 旅行の計画を立てたい\n</caller_conversation>');
-    expect(ofType(events, 'call.start').find((e) => e.nodeId === 'researcher')).toMatchObject({ task: '' });
+    expect(ofType(events, 'call.start').find((e) => e.nodeId === 'researcher')).toMatchObject({ input: '' });
   });
 
-  it('フローの段を流れの順に実行してメインエージェントに出力を渡し、条件を満たさない段は飛ばす', async () => {
+  it('フローのノードを流れの順に実行して後段に出力を渡し、条件を満たさないノードは飛ばす', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'test');
     const mainPrompts: string[] = [];
     const subPrompts: string[] = [];
@@ -344,14 +358,11 @@ describe('ターン実行', () => {
       subPrompts.push(userTextOf(prompt));
       return streamOf(textParts('集めた情報'));
     });
-    // 判定 →（条件を満たせば）調べもの → メイン
+    // ユーザー → 判定 →（条件を満たせば）調べもの → メイン → ユーザー。メインにはユーザーの発言も流す
     const flowGraphOf = (anyOf: string[]) => {
       const graph = graphWithMain();
-      graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), researcherOf({}));
-      graph.edges.push(
-        { id: 'triage-researcher', kind: 'flow', source: 'triage', target: 'researcher', condition: { questionKey: 'urgent', anyOf } },
-        { id: 'researcher-main', kind: 'flow', source: 'researcher', target: 'main', condition: null },
-      );
+      graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), agentOf('researcher', { model: 'sub' }));
+      graph.edges.push(flowEdge('user', 'triage'), flowEdge('triage', 'researcher', { questionKey: 'urgent', anyOf }), flowEdge('researcher', 'main'));
       return graph;
     };
     judgeRequests.length = 0;
@@ -369,50 +380,78 @@ describe('ターン実行', () => {
     );
     expect(mainPrompts[1]).toBe('急いで調べて');
 
-    const turnId = passed[0].turnId;
-    expect(ofType(passed, 'tool.call').map((e) => [e.callId, e.toolName])).toEqual([
-      [turnId, 'triage'],
-      [turnId, 'researcher'],
-    ]);
     expect(ofType(passed, 'call.start').map((e) => [e.nodeId, e.parentCallId])).toEqual([
-      ['researcher', turnId],
+      ['triage', null],
+      ['researcher', null],
       ['main', null],
     ]);
-    expect(ofType(skipped, 'log').some((e) => e.message.includes('researcher には前段から何も流れてこなかった'))).toBe(true);
+    expect(ofType(passed, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '回答' });
+    expect(ofType(skipped, 'log').some((e) => e.message.includes('researcher には何も流れてこなかった'))).toBe(true);
+  });
+
+  it('判定の結果で、返答するエージェントを振り分けられる', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'test');
+    calledModels.length = 0;
+    scripts.set('urgent', () => streamOf(textParts('すぐ対応します')));
+    scripts.set('calm', () => streamOf(textParts('順に対応します')));
+    const graph: GraphDefinition = {
+      nodes: [
+        createNode('user', 'user', { x: 0, y: 0 }),
+        judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]),
+        agentOf('urgentAgent', { model: 'urgent' }),
+        agentOf('calmAgent', { model: 'calm' }),
+      ],
+      edges: [
+        flowEdge('user', 'triage'),
+        flowEdge('triage', 'urgentAgent', { questionKey: 'urgent', anyOf: ['yes'] }),
+        flowEdge('triage', 'calmAgent', { questionKey: 'urgent', anyOf: ['no'] }),
+        flowEdge('urgentAgent', 'user'),
+        flowEdge('calmAgent', 'user'),
+      ],
+      settings: { maxCallDepth: 5 },
+    };
+
+    const events = await runTurn(graph, '本番が落ちています');
+    vi.unstubAllEnvs();
+
+    expect(calledModels).toEqual(['openrouter:urgent']);
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: 'すぐ対応します' });
+  });
+
+  it('フローが循環していたらターンをエラーにする', async () => {
+    const graph = graphWithMain();
+    graph.nodes.push(agentOf('researcher', { model: 'sub' }));
+    graph.edges.push(flowEdge('main', 'researcher'), flowEdge('researcher', 'main'));
+
+    const events = await runTurn(graph, 'こんにちは');
+
+    expect(ofType(events, 'call.start')).toEqual([]);
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'error', error: expect.stringContaining('循環') });
   });
 });
 
-/** モデル main のメインエージェントだけを持つグラフ */
+/** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ */
 function graphWithMain(): GraphDefinition {
-  const graph = createDefaultGraph();
-  findMainAgent(graph)!.config.model = 'main';
-  return graph;
-}
-
-/** メインエージェントがサブエージェント researcher を呼び出すグラフ */
-function graphOf(subDefaults: Partial<CallSettings>, subProvider: ModelProvider = 'openrouter'): GraphDefinition {
-  const graph = graphWithMain();
-  graph.nodes.push(researcherOf(subDefaults, subProvider));
-  graph.edges.push({ id: 'main-researcher', kind: 'call', source: 'main', target: 'researcher', settings: {} });
-  return graph;
-}
-
-/** モデル sub のサブエージェント researcher。呼び出しの既定値は指定がなければ task / finalText / fresh */
-function researcherOf(callDefaults: Partial<CallSettings>, provider: ModelProvider = 'openrouter'): NodeOf<'subAgent'> {
   return {
-    id: 'researcher',
-    kind: 'subAgent',
-    position: { x: 0, y: 0 },
-    config: {
-      name: 'researcher',
-      description: '調べもの担当',
-      provider,
-      model: 'sub',
-      systemPrompt: 'You research.',
-      maxSteps: 5,
-      callDefaults: { pass: 'task', returns: 'finalText', memory: 'fresh', ...callDefaults },
-    },
+    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agentOf('main', { model: 'main', memory: 'session' })],
+    edges: [flowEdge('user', 'main'), flowEdge('main', 'user')],
+    settings: { maxCallDepth: 5 },
   };
+}
+
+/** main がモデル sub のエージェント researcher をツールとして呼び出すグラフ */
+function graphOf(researcher: Partial<NodeOf<'agent'>['config']>): GraphDefinition {
+  const graph = graphWithMain();
+  graph.nodes.push(agentOf('researcher', { model: 'sub', description: '調べもの担当', ...researcher }));
+  graph.edges.push(toolEdge('main', 'researcher'));
+  return graph;
+}
+
+/** id をツール名にもするエージェント。指定がなければ task / finalText / fresh で呼ばれる */
+function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf<'agent'> {
+  const node = createNode('agent', id, { x: 0, y: 0 });
+  node.config = { ...node.config, name: id, maxSteps: 5, ...config };
+  return node;
 }
 
 /** 判定ノード triage */
@@ -422,16 +461,22 @@ function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
 
 function workfolderGraphOf(permission: AccessPermission): GraphDefinition {
   const graph = graphWithMain();
-  graph.nodes.push({ id: 'work', kind: 'workfolder', position: { x: 0, y: 0 }, config: {} });
-  graph.edges.push({ id: 'main-work', kind: 'access', source: 'main', target: 'work', permission });
+  graph.nodes.push(createNode('files', 'work', { x: 0, y: 0 }));
+  graph.edges.push(toolEdge('main', 'work', permission));
   return graph;
 }
 
+function toolEdge(source: string, target: string, permission: AccessPermission = 'read'): EdgeOf<'tool'> {
+  return { id: `${source}-${target}`, kind: 'tool', source, target, permission };
+}
+
+function flowEdge(source: string, target: string, condition: FlowCondition | null = null): EdgeOf<'flow'> {
+  return { id: `${source}-${target}`, kind: 'flow', source, target, condition };
+}
+
 function createSession(graph: GraphDefinition): string {
-  const graphId = randomUUID();
   const sessionId = randomUUID();
-  db.insert(graphs).values({ id: graphId, name: 'test', definition: graph, updatedAt: Date.now() }).run();
-  db.insert(sessions).values({ id: sessionId, title: 'test', graphId, activeTurnId: null, createdAt: Date.now() }).run();
+  db.insert(sessions).values({ id: sessionId, title: 'test', graph, activeTurnId: null, createdAt: Date.now() }).run();
   return sessionId;
 }
 
@@ -442,17 +487,7 @@ function runTurn(
   onEvent?: (event: RunEvent) => void,
   placement: { sessionId: string; parentTurnId: string | null } = { sessionId: createSession(graph), parentTurnId: null },
 ): Promise<RunEvent[]> {
-  const turn = {
-    id: randomUUID(),
-    ...placement,
-    userText,
-    graph,
-    status: 'running' as const,
-    mainMessages: [],
-    createdAt: Date.now(),
-  };
-  db.insert(turns).values(turn).run();
-  startTurn(turn);
+  const turn = startTurn(placement.sessionId, graph, placement.parentTurnId, userText);
   return new Promise((resolve) => {
     const events: RunEvent[] = [];
     const following = followTurn(turn.id, (event) => {
@@ -475,8 +510,12 @@ function lastIsToolResult(prompt: LanguageModelV3Prompt): boolean {
 }
 
 function userTextOf(prompt: LanguageModelV3Prompt): string {
-  const last = prompt.findLast((m) => m.role === 'user')!;
-  return (last.content[0] as { text: string }).text;
+  return textOf(prompt.findLast((m) => m.role === 'user')!.content);
+}
+
+/** メッセージの最初のテキスト */
+function textOf(content: LanguageModelV3Prompt[number]['content']): string {
+  return typeof content === 'string' ? content : ((content.find((p) => p.type === 'text') as { text: string } | undefined)?.text ?? '');
 }
 
 const usage = {

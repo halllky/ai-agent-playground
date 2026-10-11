@@ -5,22 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1791584502477,
+      "when": 1791681333507,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1791594726201,
-      "tag": "0001_file_revisions",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1791617844729,
-      "tag": "0002_agent_provider",
       "breakpoints": true
     }
   ]

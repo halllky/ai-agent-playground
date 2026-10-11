@@ -1,79 +1,48 @@
-import { PencilIcon, TrashIcon } from '@heroicons/react/16/solid';
-import { createGraph, deleteGraph, discardGraphChanges, dismissError, renameGraph, saveGraphs, selectGraph, useSession } from './store.ts';
+import { TrashIcon } from '@heroicons/react/16/solid';
+import { createSession, deleteSession, discardGraphChanges, dismissError, hasUnsavedGraph, openSession, saveGraph, useSession } from './store.ts';
 
-/** 編集・実行に使うグラフ構成の切り替えと、グラフそのものの操作 */
+/** セッションの切り替え・作成・削除と、編集中のグラフの保存 */
 export function TopBar() {
-  const graphs = useSession((s) => s.graphs);
-  const graph = useSession((s) => s.graphs.find((g) => g.id === s.graphId));
   const sessions = useSession((s) => s.sessions);
-  const unsavedGraphs = useSession((s) => s.unsavedGraphs);
+  const sessionId = useSession((s) => s.sessionId);
+  const unsaved = useSession(hasUnsavedGraph);
   const error = useSession((s) => s.error);
-
-  const confirmDelete = () => {
-    if (!graph) return;
-    const sessionCount = sessions.filter((s) => s.graphId === graph.id).length;
-    const sessionNote = sessionCount > 0 ? `\nこのグラフを使うセッション ${sessionCount} 件も削除されます。` : '';
-    if (confirm(`「${graph.name}」を削除しますか？${sessionNote}`)) void deleteGraph(graph.id);
-  };
+  const session = sessions.find((s) => s.id === sessionId);
+  const running = useSession((s) => s.turns.some((t) => t.status === 'running'));
 
   return (
     <header className="flex items-center gap-2 border-b bg-surface-sub px-2.5 py-1.5">
-      <select value={graph?.id ?? ''} onChange={(e) => void selectGraph(e.target.value)}>
-        {graphs.map((g) => (
-          <option key={g.id} value={g.id}>
-            {g.id in unsavedGraphs ? `${g.name} ●` : g.name}
+      <select className="min-w-0" value={sessionId ?? ''} onChange={(e) => void openSession(e.target.value)}>
+        {sessions.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.id === sessionId && unsaved ? `${s.title} ●` : s.title}
           </option>
         ))}
       </select>
-      <button
-        className="self-stretch px-1.5"
-        title="名前を変更"
-        aria-label="名前を変更"
-        disabled={!graph}
-        onClick={() => {
-          const name = graph && prompt('グラフの名前', graph.name);
-          if (graph && name) void renameGraph(graph.id, name);
-        }}
-      >
-        <PencilIcon className="size-3.5" />
+      <button title="今のグラフを写した新しい会話を始める" onClick={() => void createSession()}>
+        新規
       </button>
-      {/* グラフが1つも無い状態にはしない */}
       <button
         className="self-stretch px-1.5 text-danger"
-        title="削除"
-        disabled={!graph || graphs.length < 2}
-        onClick={confirmDelete}
+        title={running ? '実行中は削除できません' : 'この会話を削除'}
+        aria-label="この会話を削除"
+        disabled={!session || running}
+        onClick={() => {
+          if (session && confirm(`会話「${session.title}」を削除しますか？\nターンとファイルもすべて消え、元に戻せません。`)) void deleteSession();
+        }}
       >
         <TrashIcon className="size-3.5" />
       </button>
-      <div className="basis-2"></div>
-      <button
-        disabled={!graph}
-        onClick={() => {
-          const name = graph && prompt('複製先の名前', `${graph.name} のコピー`);
-          if (graph && name) void createGraph(name, graph.definition);
-        }}
-      >
-        複製
-      </button>
-      <button
-        onClick={() => {
-          const name = prompt('新しいグラフの名前');
-          if (name) void createGraph(name);
-        }}
-      >
-        新規
-      </button>
       <div className="flex-1"></div>
       <button
-        disabled={!graph || !(graph.id in unsavedGraphs)}
+        disabled={!unsaved}
         onClick={() => {
-          if (graph && confirm(`「${graph.name}」の未保存の変更を破棄しますか？`)) discardGraphChanges(graph.id);
+          if (confirm('グラフの未保存の変更を破棄しますか？')) discardGraphChanges();
         }}
       >
         変更を破棄
       </button>
-      <button title="Ctrl+S" disabled={Object.keys(unsavedGraphs).length === 0} onClick={() => void saveGraphs()}>
+      <button title="Ctrl+S" disabled={!unsaved} onClick={() => void saveGraph()}>
         保存
       </button>
 

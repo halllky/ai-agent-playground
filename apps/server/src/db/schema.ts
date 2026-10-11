@@ -1,25 +1,21 @@
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type { ModelMessage } from 'ai';
-import type { GraphDefinition, RunEvent, RunStatus } from 'protocol';
+import type { GraphDefinition, RunEvent, RunStatus, TurnFiles } from 'protocol';
 
-/** 名前を付けて保存されたグラフ */
-export const graphs = sqliteTable('graphs', {
-  id: text().primaryKey(),
-  name: text().notNull(),
-  definition: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
-  updatedAt: integer().notNull(),
-});
-
-/** 会話。表示中の分岐の末端ターンを持つ */
+/** 会話。次のターンで使うグラフと、表示中の分岐の末端ターンを持つ */
 export const sessions = sqliteTable('sessions', {
   id: text().primaryKey(),
   title: text().notNull(),
-  graphId: text()
-    .notNull()
-    .references(() => graphs.id),
+  graph: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
   activeTurnId: text(),
   createdAt: integer().notNull(),
 });
+
+/**
+ * ターンが終わった時点で会話に残っている状態の写し。次のターンは親ターンの写しから始める。
+ * memories はセッションで継続する記憶を持つエージェントノードの id ごとの会話
+ */
+export type TurnState = { files: TurnFiles; memories: Record<string, ModelMessage[]> };
 
 /** ユーザーの発言1回と、それに対する実行1回。parentTurnId でツリーを成す */
 export const turns = sqliteTable(
@@ -31,11 +27,12 @@ export const turns = sqliteTable(
       .references(() => sessions.id, { onDelete: 'cascade' }),
     parentTurnId: text(),
     userText: text().notNull(),
-    /** 実行時点のグラフの写し。元のグラフを後で編集しても変わらない */
+    /** 実行時点のグラフの写し。セッションのグラフを後で編集しても変わらない */
     graph: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
     status: text().$type<RunStatus>().notNull(),
-    /** メインエージェントがこのターンで生成したメッセージ。次ターン以降の履歴になる */
-    mainMessages: text({ mode: 'json' }).$type<ModelMessage[]>().notNull(),
+    reply: text().notNull(),
+    /** 実行中はその時点までの状態 */
+    state: text({ mode: 'json' }).$type<TurnState>().notNull(),
     createdAt: integer().notNull(),
   },
   (t) => [index('turns_session_idx').on(t.sessionId)],
@@ -52,40 +49,4 @@ export const runEvents = sqliteTable(
     event: text({ mode: 'json' }).$type<RunEvent>().notNull(),
   },
   (t) => [primaryKey({ columns: [t.turnId, t.seq] })],
-);
-
-/**
- * ターン時点のファイルを決めるための、ファイルの版。
- * あるターンでのファイルの中身は、そのターンから会話の先頭へ向かって最も近いターンの版で決まる。
- * 同じターン内で何度書いても1つの版にまとめる。
- */
-export const fileRevisions = sqliteTable(
-  'file_revisions',
-  {
-    turnId: text()
-      .notNull()
-      .references(() => turns.id, { onDelete: 'cascade' }),
-    volume: text().notNull(),
-    path: text().notNull(),
-    /** null なら削除 */
-    content: text(),
-    at: integer().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.turnId, t.volume, t.path] })],
-);
-
-/**
- * セッションを通して継続するサブエージェントの記憶。
- * 上書きせず書いたターンごとに残すので、ターンの分岐ごとに異なる記憶を持てる。
- */
-export const agentMemories = sqliteTable(
-  'agent_memories',
-  {
-    turnId: text()
-      .notNull()
-      .references(() => turns.id, { onDelete: 'cascade' }),
-    memoryKey: text().notNull(),
-    messages: text({ mode: 'json' }).$type<ModelMessage[]>().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.turnId, t.memoryKey] })],
 );

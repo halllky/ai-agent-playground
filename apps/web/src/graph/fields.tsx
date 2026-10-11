@@ -106,18 +106,18 @@ export function ModelField(props: { provider: ModelProvider; value: string; onCh
   );
 }
 
-type ResourceFile = { path: string; content: string };
+type InitialFile = { path: string; content: string };
 
-/** リソースの JSON ファイル群の編集。パスや JSON の誤りはここでは検査しない */
-export function ResourceFilesField(props: { files: ResourceFile[]; onChange: (files: ResourceFile[]) => void }) {
+/** files ノードの初期ファイル群の編集。パスや JSON の誤りはここでは検査しない */
+export function InitialFilesField(props: { files: InitialFile[]; onChange: (files: InitialFile[]) => void }) {
   const { files, onChange } = props;
-  const update = (index: number, file: Partial<ResourceFile>) => onChange(files.map((f, i) => (i === index ? { ...f, ...file } : f)));
+  const update = (index: number, file: Partial<InitialFile>) => onChange(files.map((f, i) => (i === index ? { ...f, ...file } : f)));
   return (
     <div className="mb-2 flex flex-col gap-2">
       {files.map((file, i) => (
         <div key={i} className="flex flex-col gap-0.5">
           <div className="flex gap-1">
-            <input className="min-w-0 flex-1" value={file.path} placeholder="data.json" onChange={(e) => update(i, { path: e.target.value })} />
+            <input className="min-w-0 flex-1" value={file.path} placeholder="notes.md" onChange={(e) => update(i, { path: e.target.value })} />
             <button type="button" className="border-danger text-danger" onClick={() => onChange(files.filter((_, j) => j !== i))}>
               削除
             </button>
@@ -125,7 +125,7 @@ export function ResourceFilesField(props: { files: ResourceFile[]; onChange: (fi
           <textarea className="font-mono text-sm" rows={6} spellCheck={false} value={file.content} onChange={(e) => update(i, { content: e.target.value })} />
         </div>
       ))}
-      <button type="button" onClick={() => onChange([...files, { path: `data${files.length + 1}.json`, content: '{}' }])}>
+      <button type="button" onClick={() => onChange([...files, { path: `file${files.length + 1}.md`, content: '' }])}>
         + ファイル
       </button>
     </div>

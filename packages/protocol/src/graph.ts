@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import { defaultModelOf, modelProviders } from './model.ts';
 
-/** サブエージェントに何を渡すか。history なら呼び出し元は指示を書かず、呼び出し元の会話だけを渡す */
+/** エージェントに何を渡すか。history なら呼び出し元は指示を書かず、呼び出し元の会話だけを渡す */
 export const passModes = ['task', 'taskWithHistory', 'history'] as const;
-/** サブエージェントから何を返すか */
+/** エージェントから何を返すか */
 export const returnModes = ['finalText', 'allSteps'] as const;
-/** サブエージェントの記憶をどこまで持ち越すか */
+/** エージェントの記憶をどこまで持ち越すか */
 export const memoryModes = ['fresh', 'turn', 'session'] as const;
 /** ファイル群へのアクセス権限。write は read を含む */
 export const accessPermissions = ['read', 'write'] as const;
@@ -14,23 +14,8 @@ export type AccessPermission = (typeof accessPermissions)[number];
 /** Web検索の深さ。advanced は精度が上がるがクレジットを多く使う */
 export const searchDepths = ['basic', 'advanced'] as const;
 
-const callSettingsSchema = z.object({
-  pass: z.enum(passModes),
-  returns: z.enum(returnModes),
-  memory: z.enum(memoryModes),
-});
-/** サブエージェントの呼び出し方 */
-export type CallSettings = z.infer<typeof callSettingsSchema>;
-
 /** ツール名として各プロバイダが受け付ける文字種 */
 export const toolNamePattern = /^[A-Za-z0-9_-]{1,64}$/;
-
-const agentConfigSchema = z.object({
-  provider: z.enum(modelProviders),
-  model: z.string(),
-  systemPrompt: z.string(),
-  maxSteps: z.number().int().positive(),
-});
 
 const positionSchema = z.object({ x: z.number(), y: z.number() });
 
@@ -75,59 +60,57 @@ const flowConditionSchema = z.object({
 /** フローエッジに流す条件。判定ノードの回答で決まる */
 export type FlowCondition = z.infer<typeof flowConditionSchema>;
 
-/** グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない */
+/**
+ * グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない。
+ * user 以外のノードの config.name は、呼び出し元から見えるツール名（files ノードではツール名の接頭辞）になる
+ */
 export const graphNodeSchema = z.discriminatedUnion('kind', [
+  /** ユーザー。ターンの発言はここから流れ出し、ここへ流れ込んだものが返答になる。グラフに1つだけ置く */
   z.object({
     id: z.string(),
-    kind: z.literal('mainAgent'),
+    kind: z.literal('user'),
     position: positionSchema,
-    config: agentConfigSchema,
   }),
+  /** LLM を呼び出して動くエージェント */
   z.object({
     id: z.string(),
-    kind: z.literal('subAgent'),
+    kind: z.literal('agent'),
     position: positionSchema,
-    config: agentConfigSchema.extend({
-      /** 呼び出し元から見えるツール名 */
+    config: z.object({
       name: z.string(),
       /** 呼び出し元に見せるツールの説明 */
       description: z.string(),
-      /** エッジ側で指定がないときに使う呼び出し方 */
-      callDefaults: callSettingsSchema,
+      provider: z.enum(modelProviders),
+      model: z.string(),
+      systemPrompt: z.string(),
+      maxSteps: z.number().int().positive(),
+      pass: z.enum(passModes),
+      returns: z.enum(returnModes),
+      memory: z.enum(memoryModes),
     }),
   }),
-  /** セッションに1つ与えられる、エージェントが Markdown / JSON ファイルを置く場所。中身はターンごとに版管理される */
+  /** エージェントが Markdown / JSON ファイルを置く場所。会話で初めて使うときに files を写し、以降の中身はターンごとに残る */
   z.object({
     id: z.string(),
-    kind: z.literal('workfolder'),
-    position: positionSchema,
-    config: z.object({}),
-  }),
-  /** セッション開始時に設定の JSON ファイル群を写し、以降はそのセッション内だけで読み書きされるデータ */
-  z.object({
-    id: z.string(),
-    kind: z.literal('resource'),
+    kind: z.literal('files'),
     position: positionSchema,
     config: z.object({
-      /** ツール名の接頭辞 */
       name: z.string(),
-      /** エージェントに見せるデータの説明 */
+      /** エージェントに見せるファイル群の説明 */
       description: z.string(),
       files: z.array(z.object({ path: z.string(), content: z.string() })),
     }),
   }),
   /**
-   * Jev（TypeSafe AI）による判定。呼び出し元は判定対象の state だけを渡し、
-   * ノードに固定で定義した質問への回答を確率・confidence 付きで受け取る。テキスト生成やツールコールはしない
+   * Jev（TypeSafe AI）による判定。入力された state について、
+   * ノードに固定で定義した質問への回答を確率・confidence 付きで返す。テキスト生成やツールコールはしない
    */
   z.object({
     id: z.string(),
     kind: z.literal('judge'),
     position: positionSchema,
     config: z.object({
-      /** 呼び出し元から見えるツール名 */
       name: z.string(),
-      /** 呼び出し元に見せるツールの説明 */
       description: z.string(),
       /** 空なら SDK の既定のモデル */
       model: z.string(),
@@ -140,49 +123,32 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     kind: z.literal('webSearch'),
     position: positionSchema,
     config: z.object({
-      /** 呼び出し元から見えるツール名 */
       name: z.string(),
       maxResults: z.number().int().positive(),
       searchDepth: z.enum(searchDepths),
     }),
   }),
 ]);
+/** グラフのノード */
 export type GraphNode = z.infer<typeof graphNodeSchema>;
+/** ノードの種別 */
 export type NodeKind = GraphNode['kind'];
 /** 種別 K のノード */
 export type NodeOf<K extends NodeKind> = Extract<GraphNode, { kind: K }>;
-/** LLM を呼び出して動くノード */
-export type AgentNode = NodeOf<'mainAgent'> | NodeOf<'subAgent'>;
-/** フローの段になれるノード。フローエッジでつながると、メインエージェントより前に1回ずつ実行される */
-export type StageNode = NodeOf<'subAgent'> | NodeOf<'judge'> | NodeOf<'webSearch'>;
+/** 入力を受け取って出力を返す、呼び出せるノード */
+export type InvocableNode = NodeOf<'agent'> | NodeOf<'judge'> | NodeOf<'webSearch'>;
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [
-  /** エージェントがサブエージェントをツールとして呼び出す */
+  /** 送り元のエージェントが、送り先をツールとして使う。permission は送り先が files ノードのときだけ意味を持つ */
   z.object({
     id: z.string(),
-    kind: z.literal('call'),
-    source: z.string(),
-    target: z.string(),
-    /** 未指定の項目は呼び出し先ノードの既定値に従う */
-    settings: callSettingsSchema.partial(),
-  }),
-  /** エージェントにファイル群の参照・編集を許す */
-  z.object({
-    id: z.string(),
-    kind: z.literal('access'),
+    kind: z.literal('tool'),
     source: z.string(),
     target: z.string(),
     permission: z.enum(accessPermissions),
   }),
-  /** エージェントに、設定を持たない道具（Web検索など）を使わせる */
-  z.object({
-    id: z.string(),
-    kind: z.literal('use'),
-    source: z.string(),
-    target: z.string(),
-  }),
-  /** フローの段の出力を、後段（別の段かメインエージェント）の入力として流す */
+  /** 送り元の出力を、送り先の入力として流す */
   z.object({
     id: z.string(),
     kind: z.literal('flow'),
@@ -192,34 +158,47 @@ export const graphEdgeSchema = z.discriminatedUnion('kind', [
     condition: flowConditionSchema.nullable(),
   }),
 ]);
+/** グラフのエッジ */
 export type GraphEdge = z.infer<typeof graphEdgeSchema>;
+/** エッジの種別 */
+export type EdgeKind = GraphEdge['kind'];
 /** 種別 K のエッジ */
-export type EdgeOf<K extends GraphEdge['kind']> = Extract<GraphEdge, { kind: K }>;
-/**
- * エッジの系統。
- * tools はエージェントに道具（サブエージェント・ファイル群・Web検索など）を持たせ、flow はノードの出力を次のノードへ流す
- */
-export type EdgeLane = 'tools' | 'flow';
+export type EdgeOf<K extends EdgeKind> = Extract<GraphEdge, { kind: K }>;
 
 /**
- * エージェント構成のグラフ全体。保存・実行の単位。
+ * エージェント構成のグラフ全体。セッションが1つ持ち、ターンは実行時の写しを持つ。
  * 実行できる構成かどうかはスキーマでは保証しない（警告付きでも保存・実行できるようにしている）。
  */
 export const graphDefinitionSchema = z.object({
   nodes: z.array(graphNodeSchema),
   edges: z.array(graphEdgeSchema),
   settings: z.object({
-    /** 循環の有無に関係なく一律にかける呼び出しネストの上限 */
+    /** 循環の有無に関係なく一律にかける、ツールとしての呼び出しのネストの上限 */
     maxCallDepth: z.number().int().positive(),
   }),
 });
+/** エージェント構成のグラフ全体 */
 export type GraphDefinition = z.infer<typeof graphDefinitionSchema>;
 
-/** 新規グラフの初期構成。メインエージェントだけを持つ */
+/**
+ * ノード種別ごとの、グラフ上での役割。接続できる組み合わせはすべてここから決まる。
+ * usesTools はツールを使う側、isTool はツールとして使われる側、inFlow はフローに置けるか
+ */
+export const nodeRoles: Record<NodeKind, { usesTools: boolean; isTool: boolean; inFlow: boolean }> = {
+  user: { usesTools: false, isTool: false, inFlow: true },
+  agent: { usesTools: true, isTool: true, inFlow: true },
+  files: { usesTools: false, isTool: true, inFlow: false },
+  judge: { usesTools: false, isTool: true, inFlow: true },
+  webSearch: { usesTools: false, isTool: true, inFlow: true },
+};
+
+/** 新規セッションのグラフ。ユーザーの発言をエージェント1つが受けて返す */
 export function createDefaultGraph(): GraphDefinition {
+  const agent = createNode('agent', 'assistant', { x: 0, y: 150 });
+  agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', memory: 'session' };
   return {
-    nodes: [createNode('mainAgent', 'main', { x: 0, y: 0 })],
-    edges: [],
+    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agent],
+    edges: [createEdge('flow', 'user-assistant', 'user', 'assistant'), createEdge('flow', 'assistant-user', 'assistant', 'user')],
     settings: { maxCallDepth: 5 },
   };
 }
@@ -229,9 +208,16 @@ export function createNode<K extends NodeKind>(kind: K, id: string, position: Gr
   return nodeFactories[kind](id, position);
 }
 
-/** 既定の設定を持つ新しいエッジ。サブエージェント呼び出しなら呼び出し方をすべて呼び出し先の既定値に任せ、アクセスなら参照のみ、フローなら無条件 */
-export function createEdge<K extends GraphEdge['kind']>(kind: K, id: string, source: string, target: string): EdgeOf<K> {
+/** 既定の設定を持つ新しいエッジ。ツールなら参照のみ、フローなら無条件 */
+export function createEdge<K extends EdgeKind>(kind: K, id: string, source: string, target: string): EdgeOf<K> {
   return edgeFactories[kind](id, source, target);
+}
+
+/** source から target へ kind のエッジを張れるか */
+export function canConnect(source: GraphNode, target: GraphNode, kind: EdgeKind): boolean {
+  if (source.id === target.id) return false;
+  if (kind === 'tool') return nodeRoles[source.kind].usesTools && nodeRoles[target.kind].isTool;
+  return nodeRoles[source.kind].inFlow && nodeRoles[target.kind].inFlow;
 }
 
 /** nodeIds のノードと、それらにつながるエッジを取り除いたグラフ */
@@ -250,76 +236,38 @@ export function removeEdges(graph: GraphDefinition, edgeIds: Iterable<string>): 
   return { ...graph, edges: graph.edges.filter((e) => !removed.has(e.id)) };
 }
 
-/** LLM を呼び出して動くノードか */
-export function isAgentNode(node: GraphNode): node is AgentNode {
-  return node.kind === 'mainAgent' || node.kind === 'subAgent';
-}
-
-/** フローの段になれるノードか */
-export function isStageNode(node: GraphNode): node is StageNode {
-  return node.kind === 'subAgent' || node.kind === 'judge' || node.kind === 'webSearch';
-}
-
-/** メインエージェントが無い・複数あるグラフも保存はできるため、見つからなければ undefined、複数なら最初の1つ */
-export function findMainAgent(graph: GraphDefinition): NodeOf<'mainAgent'> | undefined {
-  return graph.nodes.find((n): n is NodeOf<'mainAgent'> => n.kind === 'mainAgent');
-}
-
 /**
- * source から target へ lane の系統で張れるエッジの種類。張れない組み合わせなら undefined。
- * ノード種別を増やしたときは、ここに接続規則を足す。
+ * ユーザーから流れをたどって届くノードを、前段がすべて先に来る順に並べる（ユーザー自身は含めない）。
+ * 循環していて順序が決まらなければ null。ユーザーノードが無ければ空
  */
-export function edgeKindBetween(source: GraphNode, target: GraphNode, lane: EdgeLane): GraphEdge['kind'] | undefined {
-  if (source.id === target.id) return undefined;
-  if (lane === 'flow') return isStageNode(source) && (isStageNode(target) || target.kind === 'mainAgent') ? 'flow' : undefined;
-  if (!isAgentNode(source)) return undefined;
-  switch (target.kind) {
-    case 'subAgent':
-      return 'call';
-    case 'workfolder':
-    case 'resource':
-      return 'access';
-    case 'webSearch':
-    case 'judge':
-      return 'use';
-    default:
-      return undefined;
-  }
-}
+export function flowOrder(graph: GraphDefinition): InvocableNode[] | null {
+  const user = graph.nodes.find((n) => n.kind === 'user');
+  if (!user) return [];
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  const flows = graph.edges.filter((e) => {
+    const source = nodeById.get(e.source);
+    const target = nodeById.get(e.target);
+    return e.kind === 'flow' && source && target && canConnect(source, target, 'flow') && target.kind !== 'user';
+  });
 
-/** 種別 kind のエッジの系統 */
-export function laneOf(kind: GraphEdge['kind']): EdgeLane {
-  return kind === 'flow' ? 'flow' : 'tools';
-}
-
-/**
- * フローの段を実行順に並べる。
- * 段になれるノードのうち、フローエッジでほかの段かメインエージェントにつながっているものが段になる。
- * 前段がすべて終わってから後段を実行する順にする。循環していて順序が決まらなければ null
- */
-export function flowStages(graph: GraphDefinition): StageNode[] | null {
-  const stages = new Map<string, StageNode>();
-  const flows: GraphEdge[] = [];
-  for (const edge of graph.edges) {
-    if (edge.kind !== 'flow') continue;
-    const source = graph.nodes.find((n) => n.id === edge.source);
-    const target = graph.nodes.find((n) => n.id === edge.target);
-    if (!source || !target || !isStageNode(source)) continue;
-    stages.set(source.id, source);
-    if (isStageNode(target)) {
-      stages.set(target.id, target);
-      flows.push(edge);
+  const reachable = new Set<string>();
+  const visit = (id: string) => {
+    for (const edge of flows.filter((e) => e.source === id)) {
+      if (reachable.has(edge.target)) continue;
+      reachable.add(edge.target);
+      visit(edge.target);
     }
-  }
+  };
+  visit(user.id);
 
-  const pending = new Map([...stages.keys()].map((id) => [id, flows.filter((e) => e.target === id).length]));
-  const ordered: StageNode[] = [];
+  const pending = new Map([...reachable].map((id) => [id, flows.filter((e) => e.target === id && reachable.has(e.source)).length]));
+  const ordered: InvocableNode[] = [];
   let ready = [...pending].filter(([, count]) => count === 0).map(([id]) => id);
   while (ready.length > 0) {
     const next: string[] = [];
     for (const id of ready) {
-      ordered.push(stages.get(id)!);
-      for (const edge of flows.filter((e) => e.source === id)) {
+      ordered.push(nodeById.get(id) as InvocableNode);
+      for (const edge of flows.filter((e) => e.source === id && reachable.has(e.target))) {
         const count = pending.get(edge.target)! - 1;
         pending.set(edge.target, count);
         if (count === 0) next.push(edge.target);
@@ -327,7 +275,7 @@ export function flowStages(graph: GraphDefinition): StageNode[] | null {
     }
     ready = next;
   }
-  return ordered.length === stages.size ? ordered : null;
+  return ordered.length === reachable.size ? ordered : null;
 }
 
 /** 判定ノードの質問1つについて、回答として決まりうる値とその表示名。フローエッジの条件はこの値で書く */
@@ -345,21 +293,11 @@ export function judgeAnswerOptions(question: JudgeQuestion): { value: string; la
   }
 }
 
-/** エッジの設定を呼び出し先の既定値で補完する */
-export function resolveCallSettings(edge: EdgeOf<'call'>, target: NodeOf<'subAgent'>): CallSettings {
-  return { ...target.config.callDefaults, ...stripUndefined(edge.settings) };
-}
-
 const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['position']) => NodeOf<K> } = {
-  mainAgent: (id, position) => ({
+  user: (id, position) => ({ id, kind: 'user', position }),
+  agent: (id, position) => ({
     id,
-    kind: 'mainAgent',
-    position,
-    config: { provider: 'openrouter', model: defaultModelOf.openrouter, systemPrompt: 'You are a helpful assistant.', maxSteps: 10 },
-  }),
-  subAgent: (id, position) => ({
-    id,
-    kind: 'subAgent',
+    kind: 'agent',
     position,
     config: {
       name: `agent_${id.slice(0, 4)}`,
@@ -368,15 +306,16 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
       model: defaultModelOf.openrouter,
       systemPrompt: '',
       maxSteps: 10,
-      callDefaults: { pass: 'task', returns: 'finalText', memory: 'fresh' },
+      pass: 'task',
+      returns: 'finalText',
+      memory: 'fresh',
     },
   }),
-  workfolder: (id, position) => ({ id, kind: 'workfolder', position, config: {} }),
-  resource: (id, position) => ({
+  files: (id, position) => ({
     id,
-    kind: 'resource',
+    kind: 'files',
     position,
-    config: { name: `resource_${id.slice(0, 4)}`, description: '', files: [{ path: 'data.json', content: '{}' }] },
+    config: { name: 'workfolder', description: 'この会話の作業用フォルダ', files: [] },
   }),
   judge: (id, position) => ({
     id,
@@ -392,13 +331,7 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
   webSearch: (id, position) => ({ id, kind: 'webSearch', position, config: { name: 'web_search', maxResults: 5, searchDepth: 'basic' } }),
 };
 
-const edgeFactories: { [K in GraphEdge['kind']]: (id: string, source: string, target: string) => EdgeOf<K> } = {
-  call: (id, source, target) => ({ id, kind: 'call', source, target, settings: {} }),
-  access: (id, source, target) => ({ id, kind: 'access', source, target, permission: 'read' }),
-  use: (id, source, target) => ({ id, kind: 'use', source, target }),
+const edgeFactories: { [K in EdgeKind]: (id: string, source: string, target: string) => EdgeOf<K> } = {
+  tool: (id, source, target) => ({ id, kind: 'tool', source, target, permission: 'read' }),
   flow: (id, source, target) => ({ id, kind: 'flow', source, target, condition: null }),
 };
-
-function stripUndefined<T extends object>(obj: T): Partial<T> {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
-}

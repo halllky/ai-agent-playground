@@ -1,21 +1,38 @@
+import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
-import { asc, eq, inArray, max } from 'drizzle-orm';
-import { findMainAgent, resourceSpecOf, type GraphDefinition, type RunEvent, type RunEventBody } from 'protocol';
-import { db, lineageOf, runEvents, turns } from '../db/index.ts';
-import { callAgent, type AgentCallOutcome, type CallHeader, type RunScope } from './agentCall.ts';
-import { runFlow } from './flow.ts';
-import { Volume } from '../volume/index.ts';
-import type { TurnMemory } from './memory.ts';
+import { asc, eq, max } from 'drizzle-orm';
+import type { GraphDefinition, RunEvent, RunEventBody, TurnRecord } from 'protocol';
+import { db, runEvents, turns, type TurnState } from '../db/index.ts';
+import { FileError, FileGroup } from './files.ts';
+import { runFlow, type FlowOutcome } from './flow.ts';
+import type { CallHeader, RunScope } from './invoke.ts';
 
 type RunListener = (event: RunEvent) => void;
 
 const activeRuns = new Map<string, Run>();
 
-/** 保存済みのターンの実行をバックグラウンドで始める */
-export function startTurn(turn: { id: string; parentTurnId: string | null; userText: string; graph: GraphDefinition }): void {
-  const run = new Run(turn.id, turn.graph);
-  activeRuns.set(turn.id, run);
-  void run.execute(turn.parentTurnId, turn.userText).finally(() => activeRuns.delete(turn.id));
+/**
+ * 新しいターンを保存し、その実行をバックグラウンドで始める。
+ * ターンの状態は親ターンが終わった時点の写しから始めるので、過去ターンからやり直した分岐では、分岐元の時点の状態に戻る
+ */
+export function startTurn(sessionId: string, graph: GraphDefinition, parentTurnId: string | null, userText: string): TurnRecord {
+  const row: typeof turns.$inferSelect = {
+    id: randomUUID(),
+    sessionId,
+    parentTurnId,
+    userText,
+    graph,
+    status: 'running',
+    reply: '',
+    state: stateAfter(parentTurnId),
+    createdAt: Date.now(),
+  };
+  db.insert(turns).values(row).run();
+  const run = new Run(row);
+  activeRuns.set(row.id, run);
+  void run.execute().finally(() => activeRuns.delete(row.id));
+  const { state: _, ...record } = row;
+  return record;
 }
 
 /** 実行中のターンを止める。実行中でなければ false */
@@ -46,9 +63,10 @@ export function closeInterruptedTurns(): void {
       turnId: id,
       seq: (last?.seq ?? 0) + 1,
       at: Date.now(),
-      ...turnHeaderOf(id),
+      ...turnHeader,
       type: 'turn.finish',
       status: 'error',
+      reply: '',
       error: 'サーバーの停止により中断されました',
     };
     db.insert(runEvents).values({ turnId: id, seq: event.seq!, event }).run();
@@ -56,18 +74,19 @@ export function closeInterruptedTurns(): void {
   }
 }
 
-/** 実行中のターン1件。イベントの採番・永続化と購読者への配信を受け持つ */
+/** 実行中のターン1件。イベントの採番・永続化と購読者への配信、状態の保存を受け持つ */
 class Run implements RunScope {
+  readonly graph: GraphDefinition;
+  readonly state: TurnState;
   readonly signal: AbortSignal;
-  readonly turnMemory: TurnMemory = new Map();
+  readonly turnMemory = new Map<string, ModelMessage[]>();
   private readonly controller = new AbortController();
   private readonly listeners = new Set<RunListener>();
   private seq = 0;
 
-  constructor(
-    readonly turnId: string,
-    readonly graph: GraphDefinition,
-  ) {
+  constructor(private readonly turn: typeof turns.$inferSelect) {
+    this.graph = turn.graph;
+    this.state = turn.state;
     this.signal = this.controller.signal;
   }
 
@@ -82,72 +101,65 @@ class Run implements RunScope {
 
   emit(header: CallHeader, body: RunEventBody): void {
     const live = body.type === 'text.delta';
-    const event: RunEvent = { turnId: this.turnId, seq: live ? null : ++this.seq, at: Date.now(), ...header, ...body };
-    if (!live) db.insert(runEvents).values({ turnId: this.turnId, seq: event.seq!, event }).run();
+    const event: RunEvent = { turnId: this.turn.id, seq: live ? null : ++this.seq, at: Date.now(), ...header, ...body };
+    if (!live) db.insert(runEvents).values({ turnId: this.turn.id, seq: event.seq!, event }).run();
     for (const listener of this.listeners) listener(event);
   }
 
-  async execute(parentTurnId: string | null, userText: string): Promise<void> {
-    const turnHeader = turnHeaderOf(this.turnId);
-    const main = findMainAgent(this.graph);
-    if (!main) {
-      this.finish(turnHeader, 'error', [], 'メインエージェントがありません');
-      return;
-    }
+  saveState(): void {
+    db.update(turns).set({ state: this.state }).where(eq(turns.id, this.turn.id)).run();
+  }
 
-    this.seedResources(turnHeader);
+  async execute(): Promise<void> {
+    let outcome: FlowOutcome;
     try {
-      const history = conversationBefore(parentTurnId);
-      const prompt = await runFlow(this, turnHeader, main, { history, userText });
-      if (this.signal.aborted) {
-        this.finish(turnHeader, 'aborted', [], null);
-        return;
-      }
-      const outcome = await callAgent(this, {
-        node: main,
-        parentCallId: null,
-        toolCallId: null,
-        depth: 0,
-        settings: null,
-        taskForEventLog: prompt,
-        messages: [...history, { role: 'user', content: prompt }],
-      });
-      this.finish(turnHeader, outcome.status, outcome.responseMessages, outcome.error);
+      this.seedFiles();
+      outcome = await runFlow(this, this.turn.userText, conversationBefore(this.turn.parentTurnId));
     } catch (e) {
-      this.finish(turnHeader, 'error', [], e instanceof Error ? e.message : String(e));
+      outcome = { status: 'error', reply: '', error: e instanceof Error ? e.message : String(e) };
     }
+    db.update(turns).set({ status: outcome.status, reply: outcome.reply }).where(eq(turns.id, this.turn.id)).run();
+    this.emit(turnHeader, { type: 'turn.finish', ...outcome });
   }
 
-  /** リソースノードの設定のファイルを、この会話でまだ使われていなければ写す。以降の編集はこの会話の中だけに効く */
-  private seedResources(header: CallHeader): void {
+  /** files ノードの設定のファイルを、この会話でまだ使われていなければ写す。以降の編集はこの会話の中だけに効く */
+  private seedFiles(): void {
     for (const node of this.graph.nodes) {
-      if (node.kind !== 'resource') continue;
-      const spec = resourceSpecOf(node);
-      const volume = new Volume(this.turnId, spec);
-      for (const failure of volume.seed(node.config.files)) {
-        this.emit(header, { type: 'log', level: 'warn', message: `リソース ${node.config.name} のファイルを写せませんでした: ${failure}` });
+      if (node.kind !== 'files' || node.id in this.state.files) continue;
+      const group = new FileGroup((this.state.files[node.id] = {}), () => this.saveState());
+      for (const file of node.config.files) {
+        try {
+          group.write(file.path, file.content);
+        } catch (e) {
+          if (!(e instanceof FileError)) throw e;
+          this.emit(turnHeader, { type: 'log', level: 'warn', message: `${node.config.name} の ${file.path} を写せませんでした: ${e.message}` });
+        }
       }
     }
-  }
-
-  private finish(header: CallHeader, status: AgentCallOutcome['status'], mainMessages: ModelMessage[], error: string | null) {
-    db.update(turns).set({ status, mainMessages }).where(eq(turns.id, this.turnId)).run();
-    this.emit(header, { type: 'turn.finish', status, error });
   }
 }
 
 /** どの呼び出しにも属さない、ターン全体についてのイベントのヘッダ */
-function turnHeaderOf(turnId: string): CallHeader {
-  return { callId: turnId, parentCallId: null, nodeId: '' };
+const turnHeader: CallHeader = { callId: null, parentCallId: null, nodeId: null };
+
+/** parentTurnId のターンが終わった時点の状態の写し。会話の先頭なら空 */
+function stateAfter(parentTurnId: string | null): TurnState {
+  const parent = parentTurnId ? db.select({ state: turns.state }).from(turns).where(eq(turns.id, parentTurnId)).get() : undefined;
+  return parent?.state ?? { files: {}, memories: {} };
 }
 
-/** parentTurnId までの分岐をたどった、メインエージェントから見た会話履歴 */
+/** parentTurnId までの分岐をたどった、ユーザーの発言と返答の会話 */
 function conversationBefore(parentTurnId: string | null): ModelMessage[] {
-  if (!parentTurnId) return [];
-  const lineage = lineageOf(parentTurnId).reverse();
-  const rows = db.select().from(turns).where(inArray(turns.id, lineage)).all();
-  return lineage.flatMap((id) => {
-    const turn = rows.find((r) => r.id === id)!;
-    return [{ role: 'user', content: turn.userText } satisfies ModelMessage, ...turn.mainMessages];
-  });
+  const messages: ModelMessage[] = [];
+  for (let id = parentTurnId; id; ) {
+    const turn = db
+      .select({ parentTurnId: turns.parentTurnId, userText: turns.userText, reply: turns.reply })
+      .from(turns)
+      .where(eq(turns.id, id))
+      .get();
+    if (!turn) break;
+    messages.unshift({ role: 'user', content: turn.userText }, { role: 'assistant', content: turn.reply });
+    id = turn.parentTurnId;
+  }
+  return messages;
 }

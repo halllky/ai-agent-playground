@@ -1,100 +1,9 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1e7b5170-edfe-4b60-b76d-0680c5278302",
+  "id": "2b4be13a-8bb0-4cca-bef6-5a7fb5042128",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
-    "agent_memories": {
-      "name": "agent_memories",
-      "columns": {
-        "turn_id": {
-          "name": "turn_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "memory_key": {
-          "name": "memory_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "messages": {
-          "name": "messages",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "agent_memories_turn_id_turns_id_fk": {
-          "name": "agent_memories_turn_id_turns_id_fk",
-          "tableFrom": "agent_memories",
-          "tableTo": "turns",
-          "columnsFrom": [
-            "turn_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "agent_memories_turn_id_memory_key_pk": {
-          "columns": [
-            "turn_id",
-            "memory_key"
-          ],
-          "name": "agent_memories_turn_id_memory_key_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "graphs": {
-      "name": "graphs",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "definition": {
-          "name": "definition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "run_events": {
       "name": "run_events",
       "columns": {
@@ -165,8 +74,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "graph_id": {
-          "name": "graph_id",
+        "graph": {
+          "name": "graph",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -188,21 +97,7 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "sessions_graph_id_graphs_id_fk": {
-          "name": "sessions_graph_id_graphs_id_fk",
-          "tableFrom": "sessions",
-          "tableTo": "graphs",
-          "columnsFrom": [
-            "graph_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -252,8 +147,15 @@
           "notNull": true,
           "autoincrement": false
         },
-        "main_messages": {
-          "name": "main_messages",
+        "reply": {
+          "name": "reply",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
           "type": "text",
           "primaryKey": false,
           "notNull": true,

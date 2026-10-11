@@ -1,16 +1,14 @@
 import {
-  edgeKindBetween,
-  flowStages,
-  isAgentNode,
+  canConnect,
+  flowOrder,
   judgeAnswerOptions,
-  laneOf,
   toolNamePattern,
   type EdgeOf,
   type GraphDefinition,
   type GraphNode,
   type JudgeQuestion,
 } from './graph.ts';
-import { resourceSpecOf, toolNamesOf, volumePathError, volumeToolName } from './tools.ts';
+import { filePathError, toolNamesOf } from './tools.ts';
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from './model.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
@@ -27,37 +25,36 @@ export type GraphWarning = {
 export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<ModelProvider, ModelInfo[]>>): GraphWarning[] {
   const warnings: GraphWarning[] = [];
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  const graphWarning = (message: string) => warnings.push({ target: { graph: true }, message });
 
-  const mainCount = graph.nodes.filter((n) => n.kind === 'mainAgent').length;
-  if (mainCount !== 1) {
-    warnings.push({ target: { graph: true }, message: `メインエージェントがちょうど1つ必要です（現在 ${mainCount}）` });
-  }
-  if (graph.nodes.filter((n) => n.kind === 'workfolder').length > 1) {
-    warnings.push({ target: { graph: true }, message: 'ワークフォルダはセッションに1つなので、複数置いても同じ中身を指します' });
-  }
-  if (flowStages(graph) === null) {
-    warnings.push({ target: { graph: true }, message: 'フローが循環しています。循環している間はフローの段を実行しません' });
+  const users = graph.nodes.filter((n) => n.kind === 'user');
+  if (users.length !== 1) graphWarning(`ユーザーノードがちょうど1つ必要です（現在 ${users.length}）`);
+  const order = flowOrder(graph);
+  if (order === null) graphWarning('フローが循環しているため実行できません');
+  else if (order.length === 0) graphWarning('ユーザーから何も流れていません');
+  if (!graph.edges.some((e) => e.kind === 'flow' && users.some((u) => u.id === e.target))) {
+    graphWarning('ユーザーへ何も流れ込まないため、返答が空になります');
   }
 
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
-    if (!isAgentNode(node)) continue;
-    const outgoing = graph.edges.filter((e) => e.source === node.id && laneOf(e.kind) === 'tools');
+    if (node.kind !== 'agent') continue;
+    const tools = graph.edges.filter((e) => e.source === node.id && e.kind === 'tool');
     const catalog = models[node.config.provider];
     const model = catalog?.find((m) => m.id === node.config.model);
     if (catalog && !model) {
       warnings.push({ target: { nodeId: node.id }, message: `${modelProviderLabels[node.config.provider]} のモデル一覧に ${node.config.model} がありません` });
     }
-    if (model && !model.supportsTools && outgoing.length > 0) {
-      warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルからエッジが出ています' });
+    if (model && !model.supportsTools && tools.length > 0) {
+      warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルにツールが付いています' });
     }
-    warnings.push(...duplicateToolNameWarnings(node, outgoing, nodeById));
+    warnings.push(...duplicateToolNameWarnings(node, tools, nodeById));
   }
 
   for (const edge of graph.edges) {
     const source = nodeById.get(edge.source);
     const target = nodeById.get(edge.target);
-    if (!source || !target || edgeKindBetween(source, target, laneOf(edge.kind)) !== edge.kind) {
+    if (!source || !target || !canConnect(source, target, edge.kind)) {
       warnings.push({ target: { edgeId: edge.id }, message: 'このノード同士は接続できません' });
     } else if (edge.kind === 'flow') {
       warnings.push(...flowConditionWarnings(edge, source).map((message) => ({ target: { edgeId: edge.id }, message })));
@@ -70,25 +67,25 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
 /** ノード単体の設定の問題 */
 function configWarnings(node: GraphNode): string[] {
   switch (node.kind) {
-    case 'subAgent':
+    case 'user':
+      return [];
+    case 'agent':
     case 'webSearch':
       return toolNamePattern.test(node.config.name) ? [] : [toolNameMessage];
     case 'judge':
       return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...judgeQuestionWarnings(node.config.questions)];
-    case 'resource': {
-      const spec = resourceSpecOf(node);
-      const messages = toolNamePattern.test(volumeToolName(spec, 'patch_json'))
+    case 'files': {
+      // 最も長い操作名を付けてもツール名に収まるか
+      const messages = toolNamePattern.test(`${node.config.name}_edit_markdown`)
         ? []
-        : ['名前は半角英数字・_・- の53文字以内にしてください（ツール名の接頭辞になります）'];
+        : ['名前は半角英数字・_・- の50文字以内にしてください（ツール名の接頭辞になります）'];
       for (const file of node.config.files) {
-        const pathError = volumePathError(spec, file.path);
+        const pathError = filePathError(file.path);
         if (pathError) messages.push(pathError);
-        else if (!isJson(file.content)) messages.push(`${file.path} が JSON として読めません`);
+        else if (file.path.endsWith('.json') && !isJson(file.content)) messages.push(`${file.path} が JSON として読めません`);
       }
       return messages;
     }
-    default:
-      return [];
   }
 }
 
@@ -132,14 +129,10 @@ function isJson(text: string): boolean {
   }
 }
 
-function duplicateToolNameWarnings(
-  node: GraphNode,
-  outgoing: GraphDefinition['edges'],
-  nodeById: Map<string, GraphNode>,
-): GraphWarning[] {
+function duplicateToolNameWarnings(node: GraphNode, tools: GraphDefinition['edges'], nodeById: Map<string, GraphNode>): GraphWarning[] {
   const seen = new Set<string>();
   const duplicates = new Set<string>();
-  for (const edge of outgoing) {
+  for (const edge of tools) {
     const target = nodeById.get(edge.target);
     for (const name of target ? toolNamesOf(edge, target) : []) {
       if (seen.has(name)) duplicates.add(name);

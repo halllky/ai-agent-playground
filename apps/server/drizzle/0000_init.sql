@@ -1,18 +1,3 @@
-CREATE TABLE `agent_memories` (
-	`turn_id` text NOT NULL,
-	`memory_key` text NOT NULL,
-	`messages` text NOT NULL,
-	PRIMARY KEY(`turn_id`, `memory_key`),
-	FOREIGN KEY (`turn_id`) REFERENCES `turns`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
-CREATE TABLE `graphs` (
-	`id` text PRIMARY KEY NOT NULL,
-	`name` text NOT NULL,
-	`definition` text NOT NULL,
-	`updated_at` integer NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE `run_events` (
 	`turn_id` text NOT NULL,
 	`seq` integer NOT NULL,
@@ -24,10 +9,9 @@ CREATE TABLE `run_events` (
 CREATE TABLE `sessions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`title` text NOT NULL,
-	`graph_id` text NOT NULL,
+	`graph` text NOT NULL,
 	`active_turn_id` text,
-	`created_at` integer NOT NULL,
-	FOREIGN KEY (`graph_id`) REFERENCES `graphs`(`id`) ON UPDATE no action ON DELETE no action
+	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE `turns` (
@@ -37,7 +21,8 @@ CREATE TABLE `turns` (
 	`user_text` text NOT NULL,
 	`graph` text NOT NULL,
 	`status` text NOT NULL,
-	`main_messages` text NOT NULL,
+	`reply` text NOT NULL,
+	`state` text NOT NULL,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`session_id`) REFERENCES `sessions`(`id`) ON UPDATE no action ON DELETE cascade
 );
