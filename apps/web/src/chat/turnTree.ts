@@ -1,5 +1,5 @@
 import type { RunEvent, RunEventOf, RunStatus, StepRecord } from 'protocol';
-import { totalsOf, type Totals } from './totals';
+import { totalsOf, type Totals } from './totals.tsx';
 
 /** 1ターン分の表示内容 */
 export type TurnTree = {

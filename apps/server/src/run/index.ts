@@ -3,9 +3,9 @@ import type { ModelMessage } from 'ai';
 import { asc, eq, max } from 'drizzle-orm';
 import type { FilesByNode, GraphDefinition, RunEvent, RunEventBody, TurnFiles, TurnRecord } from 'protocol';
 import { db, runEvents, turns, type TurnState } from '../db/index.ts';
-import { FileError, FileGroup } from './files.ts';
 import { runFlow, type FlowOutcome } from './flow.ts';
-import type { CallHeader, RunScope } from './invoke.ts';
+import { turnHeader, type CallHeader, type RunScope } from './invoke.ts';
+import { FileError, FileGroup } from './nodes/files.ts';
 
 type RunListener = (event: RunEvent) => void;
 
@@ -148,9 +148,6 @@ class Run implements RunScope {
     }
   }
 }
-
-/** どの呼び出しにも属さない、ターン全体についてのイベントのヘッダ */
-const turnHeader: CallHeader = { callId: null, parentCallId: null, nodeId: null };
 
 /** parentTurnId のターンが終わった時点の状態の写し。会話の先頭なら空 */
 function stateAfter(parentTurnId: string | null): TurnState {

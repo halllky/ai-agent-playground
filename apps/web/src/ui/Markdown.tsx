@@ -17,7 +17,7 @@ const heading = 'mt-3 mb-1.5 font-bold';
 
 // Tailwind が要素の既定の見た目（見出しの大きさ・箇条書きの記号など）を消すため、要素ごとに付け直す
 const components: Components = {
-  p:styled('p', 'my-1.5'),
+  p: styled('p', 'my-1.5'),
   h1: styled('h1', `${heading} text-xl`),
   h2: styled('h2', `${heading} text-lg`),
   h3: styled('h3', `${heading} text-md`),

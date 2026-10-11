@@ -1,15 +1,7 @@
-import {
-  canConnect,
-  flowOrder,
-  judgeAnswerOptions,
-  toolNamePattern,
-  type EdgeOf,
-  type GraphDefinition,
-  type GraphNode,
-  type JudgeQuestion,
-} from './graph.ts';
-import { filePathError, toolNamesOf } from './tools.ts';
-import { modelProviderLabels, type ModelInfo, type ModelProvider } from './model.ts';
+import { modelProviderLabels, type ModelInfo, type ModelProvider } from '../model.ts';
+import { canConnect, flowOrder } from './connections.ts';
+import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion } from './schema.ts';
+import { filePathError, toolNamePattern, toolNamesOf } from './tools.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
 export type GraphWarning = {

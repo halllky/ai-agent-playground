@@ -1,4 +1,7 @@
-import type { AccessPermission, GraphEdge, GraphNode, NodeOf } from './graph.ts';
+import type { AccessPermission, GraphEdge, GraphNode, NodeOf } from './schema.ts';
+
+/** ツール名として各プロバイダが受け付ける文字種 */
+export const toolNamePattern = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** files ノードのファイル群に対する操作。1つの操作が1つのツールになる */
 export type FileOperation = 'list' | 'read' | 'write' | 'delete' | 'edit_markdown' | 'patch_json';

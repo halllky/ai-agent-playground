@@ -21,6 +21,51 @@ description: ソースコードの実装をするときに守るべき規約
 
 具体的には以下のような手段でこれを実現する。
 
+### フォルダ名とファイル名を見るだけで大まかな構成が分かるようにフォルダ分割・ファイル分割する
+
+あるフォルダ1個の直下に並ぶフォルダ名とファイル名を見たときに、各フォルダないしファイルの役割とこの親フォルダの全体的な構造がおおまかにつかめるようにする。
+
+NG: 関心のある箇所にたどり着くため index.tsx を全部読む必要がある
+- AppLayout (Folder)
+  - index.tsx
+
+OK: 適切な粒度で分割されている
+- AppLayout (Folder)
+  - index.ts
+  - HeaderPane.tsx
+  - ContenetPane.tsx
+  - FooterPane.tsx
+
+NG: 細切れすぎて index.tsx を全部読んで目的のものを探しているのと変わらない
+- AppLayout (Folder)
+  - index.ts
+  - HeaderPane.tsx
+  - HeaderTitleSection.tsx
+  - HeaderEndButtonSection.tsx
+  - ContenetContainer.tsx
+  - ContenetTitle.tsx
+  - ContenetMainTable.tsx
+  - ContenetDetail.tsx
+  - ContenetSideBar.tsx
+  ...
+
+どうしても規模が大きすぎて多くのファイル分割が必要ならサブフォルダを切る方がよい
+- AppLayout (Folder)
+  - index.ts
+  - Header (Folder)
+    - index.ts
+    - HeaderPane.tsx
+    - TitleSection.tsx
+    - EndButtonSection.tsx
+  - Content (Folder)
+    - index.ts
+    - Container.tsx
+    - Title.tsx
+    - MainTable.tsx
+    - Detail.tsx
+    - SideBar.tsx
+  - FooterPane.tsx
+
 ### 凝集度は高く、結合度は低く
 
 各クラス・モジュールは 1 つの関心事に責任を持ち、他のモジュールの内部事情を知らない方が望ましい。

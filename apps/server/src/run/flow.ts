@@ -1,7 +1,7 @@
 import type { ModelMessage } from 'ai';
 import { flowOrder, type EdgeOf, type GraphDefinition, type GraphNode, type RunStatus } from 'protocol';
-import { meetsCondition, type Verdict } from '../judge/index.ts';
-import { invoke, type CallHeader, type RunScope } from './invoke.ts';
+import { invoke, turnHeader, type RunScope } from './invoke.ts';
+import { meetsCondition, type Verdict } from './nodes/judge.ts';
 
 /** ターン1回分の実行結果。reply はユーザーノードへ流れ込んだ返答 */
 export type FlowOutcome = { status: Exclude<RunStatus, 'running'>; reply: string; error: string | null };
@@ -18,7 +18,6 @@ export async function runFlow(scope: RunScope, userText: string, history: ModelM
   if (!user) return { status: 'error', reply: '', error: 'ユーザーノードがありません' };
   if (!order) return { status: 'error', reply: '', error: 'フローが循環しています' };
 
-  const turnHeader: CallHeader = { callId: null, parentCallId: null, nodeId: null };
   const conversation: ModelMessage[] = [...history, { role: 'user', content: userText }];
   const outputs = new Map<string, Output>([[user.id, { node: user, text: userText, verdict: null }]]);
   let failed = false;

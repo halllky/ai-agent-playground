@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { modelProviders, type GraphDefinition, type ModelInfo, type ModelProvider, type RunEvent, type SessionRecord, type TurnRecord } from 'protocol';
 import { api } from '../api.ts';
+import { latestLeafOf, turnPath } from './branches.ts';
 
 type State = {
   sessions: SessionRecord[];
@@ -179,21 +180,6 @@ export function dismissError(): void {
   useSession.setState({ error: null });
 }
 
-/** turn と同じ親を持つターン（turn 自身を含む）を作成順に */
-export function siblingsOf(turns: TurnRecord[], turn: TurnRecord): TurnRecord[] {
-  return turns.filter((t) => t.parentTurnId === turn.parentTurnId).sort((a, b) => a.createdAt - b.createdAt);
-}
-
-/** 会話の先頭から activeTurnId までのターン */
-export function turnPath(turns: TurnRecord[], activeTurnId: string | null): TurnRecord[] {
-  const byId = new Map(turns.map((t) => [t.id, t]));
-  const path: TurnRecord[] = [];
-  for (let turn = activeTurnId ? byId.get(activeTurnId) : undefined; turn; turn = turn.parentTurnId ? byId.get(turn.parentTurnId) : undefined) {
-    path.unshift(turn);
-  }
-  return path;
-}
-
 /** 実行はサーバー上のセッションのグラフで行われるため、未保存の編集を先に保存する */
 async function startTurn(parentTurnId: string | null, userText: string): Promise<void> {
   if (!(await saveGraph())) return;
@@ -204,15 +190,6 @@ async function startTurn(parentTurnId: string | null, userText: string): Promise
     useSession.setState((s) => ({ turns: [...s.turns, turn], activeTurnId: turn.id }));
     follow(turn.id);
   });
-}
-
-function latestLeafOf(turns: TurnRecord[], turnId: string): string {
-  let leaf = turnId;
-  for (;;) {
-    const children = turns.filter((t) => t.parentTurnId === leaf);
-    if (children.length === 0) return leaf;
-    leaf = children.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).id;
-  }
 }
 
 const following = new Map<string, () => void>();

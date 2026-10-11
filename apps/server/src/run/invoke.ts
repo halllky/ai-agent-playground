@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { tool, type ModelMessage, type Tool, type ToolSet } from 'ai';
-import { z } from 'zod';
+import type { ModelMessage, Tool, ToolSet } from 'ai';
 import type { GraphDefinition, InvocableNode, NodeOf, RunEventBody, RunEventHeader, RunStatus } from 'protocol';
 import type { TurnState } from '../db/index.ts';
-import { describeJudge, judge, type Verdict } from '../judge/index.ts';
-import { search } from '../webSearch/index.ts';
-import { runAgent } from './agent.ts';
-import { FileGroup, fileTools } from './files.ts';
-import { transcriptOf } from './transcript.ts';
+import { agentTool, invokeAgent } from './nodes/agent.ts';
+import { FileGroup, fileTools } from './nodes/files.ts';
+import { judge, judgeTool, type Verdict } from './nodes/judge.ts';
+import { search, webSearchTool } from './nodes/webSearch.ts';
 
 /** 実行中のターン1回分のうち、ノードの呼び出しが必要とするもの */
 export type RunScope = {
@@ -23,6 +21,9 @@ export type RunScope = {
 
 /** イベントのヘッダのうち、どの呼び出しで発生したかを表す部分 */
 export type CallHeader = Pick<RunEventHeader, 'callId' | 'parentCallId' | 'nodeId'>;
+
+/** どの呼び出しにも属さない、ターン全体についてのイベントのヘッダ */
+export const turnHeader: CallHeader = { callId: null, parentCallId: null, nodeId: null };
 
 /** ノードの呼び出し1回分の指定。ツールコールからでもフローからでも同じ形で呼ぶ */
 export type Invocation = {
@@ -44,6 +45,9 @@ export type InvocationResult = {
   /** 判定ノードの回答。それ以外や失敗時は null */
   verdict: Verdict | null;
 };
+
+/** ノードをツールとして呼び出す関数。input は呼び出し元のモデルが書いた入力。失敗したら例外を投げる */
+export type ToolCall = (input: string, options: { toolCallId: string; messages: ModelMessage[] }) => Promise<string>;
 
 /**
  * ノードを1回呼び出し、call.start から call.finish までのイベントを残す。
@@ -73,8 +77,11 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
     throw new Error(`呼び出しの深さが上限（${scope.graph.settings.maxCallDepth}）に達したため ${node.config.name} を呼び出しませんでした`);
   }
   switch (node.kind) {
-    case 'agent':
-      return invokeAgent(scope, node, inv, header);
+    case 'agent': {
+      const tools = toolsFor(scope, node, header.callId, inv.depth);
+      const outcome = await invokeAgent(scope, node, inv, tools, (body) => scope.emit(header, body));
+      return { ...outcome, verdict: null };
+    }
     case 'judge': {
       const verdict = await judge(node, inv.input, scope.signal);
       return { status: 'done', output: JSON.stringify(verdict.answers, null, 2), verdict, error: null };
@@ -86,57 +93,8 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
   }
 }
 
-/** エージェントを記憶とあわせて呼び出し、今回の会話を記憶に残す */
-async function invokeAgent(scope: RunScope, node: NodeOf<'agent'>, inv: Invocation, header: CallHeader) {
-  const memory = recallMemory(scope, node);
-  const userMessage: ModelMessage = { role: 'user', content: promptOf(node.config.pass, inv.input, inv.conversation) };
-  const tools = toolsFor(scope, node, header, inv.depth);
-  const outcome = await runAgent(node, [...memory, userMessage], tools, scope.signal, (body) => scope.emit(header, body));
-  storeMemory(scope, node, [...memory, userMessage, ...outcome.responseMessages]);
-  return { status: outcome.status, output: outcome.error ?? outcome.output, verdict: null, error: outcome.error };
-}
-
-/** エージェントの過去の会話。セッション継続の記憶は、親ターンから受け継いだ状態に入っている */
-function recallMemory(scope: RunScope, node: NodeOf<'agent'>): ModelMessage[] {
-  switch (node.config.memory) {
-    case 'fresh':
-      return [];
-    case 'turn':
-      return scope.turnMemory.get(node.id) ?? [];
-    case 'session':
-      return scope.state.memories[node.id] ?? [];
-  }
-}
-
-function storeMemory(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMessage[]): void {
-  switch (node.config.memory) {
-    case 'fresh':
-      return;
-    case 'turn':
-      scope.turnMemory.set(node.id, messages);
-      return;
-    case 'session':
-      scope.state.memories[node.id] = messages;
-      scope.saveState();
-      return;
-  }
-}
-
-/** エージェントに渡す、今回の依頼のメッセージ本文 */
-function promptOf(pass: NodeOf<'agent'>['config']['pass'], task: string, conversation: ModelMessage[]): string {
-  const caller = () => `<caller_conversation>\n${transcriptOf(conversation)}\n</caller_conversation>`;
-  switch (pass) {
-    case 'task':
-      return task;
-    case 'taskWithHistory':
-      return `${caller()}\n\n<task>\n${task}\n</task>`;
-    case 'history':
-      return caller();
-  }
-}
-
 /** エージェントから出るツールエッジを、そのエージェントが使えるツールに変換する。ツールは呼び出しごとに逐次実行される */
-function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, header: CallHeader, depth: number): ToolSet {
+function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, callId: string | null, depth: number): ToolSet {
   const tools: ToolSet = {};
   for (const edge of scope.graph.edges) {
     if (edge.kind !== 'tool' || edge.source !== agent.id) continue;
@@ -146,7 +104,7 @@ function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, header: CallHeader, d
       const group = new FileGroup((scope.state.files[target.id] ??= {}), () => scope.saveState());
       Object.assign(tools, fileTools(target, edge.permission, group));
     } else {
-      tools[target.config.name] = nodeTool(scope, target, header.callId, depth + 1);
+      tools[target.config.name] = nodeTool(scope, target, callId, depth + 1);
     }
   }
   return serialized(tools);
@@ -154,34 +112,18 @@ function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, header: CallHeader, d
 
 /** ノードを呼び出すツール。失敗はツールのエラーとして呼び出し元に返す */
 function nodeTool(scope: RunScope, node: InvocableNode, parentCallId: string | null, depth: number): Tool {
-  const call = async (input: string, { toolCallId, messages }: { toolCallId: string; messages: ModelMessage[] }) => {
+  const call: ToolCall = async (input, { toolCallId, messages }) => {
     const result = await invoke(scope, { node, input, conversation: messages, parentCallId, toolCallId, depth });
     if (result.status === 'error') throw new Error(result.output);
     return result.output;
   };
   switch (node.kind) {
     case 'agent':
-      // 会話だけを渡す呼び出し方なら、呼び出し元は指示を書かない
-      if (node.config.pass === 'history') {
-        return tool({ description: node.config.description, inputSchema: z.object({}), execute: (_, options) => call('', options) });
-      }
-      return tool({
-        description: node.config.description,
-        inputSchema: z.object({ task: z.string().describe('エージェントに依頼する内容') }),
-        execute: ({ task }, options) => call(task, options),
-      });
+      return agentTool(node, call);
     case 'judge':
-      return tool({
-        description: describeJudge(node),
-        inputSchema: z.object({ state: z.string().describe('判定してほしい内容。文章か JSON') }),
-        execute: ({ state }, options) => call(state, options),
-      });
+      return judgeTool(node, call);
     case 'webSearch':
-      return tool({
-        description: 'Web を検索し、関連するページのタイトル・URL・本文の抜粋を返す',
-        inputSchema: z.object({ query: z.string().describe('検索語句') }),
-        execute: ({ query }, options) => call(query, options),
-      });
+      return webSearchTool(call);
   }
 }
 

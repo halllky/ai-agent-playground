@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TurnRecord } from 'protocol';
-import { abort, send, turnPath, useSession } from '../session/store';
-import { TotalsLine, totalsOf } from './totals';
-import { TurnView } from './TurnView';
+import { turnPath } from '../session/branches.ts';
+import { abort, send, useSession } from '../session/store.ts';
+import { TotalsLine, totalsOf } from './totals.tsx';
+import { TurnView } from './TurnView.tsx';
 
 /**
  * 表示中の分岐の会話と、発言の入力欄。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。

@@ -1,4 +1,4 @@
-import type { GraphDefinition } from './graph.ts';
+import type { GraphDefinition } from './graph/schema.ts';
 import type { RunStatus } from './runEvent.ts';
 
 /** 1つの会話。ターンの分岐をすべて含み、次に実行するターンで使うグラフを持つ */
