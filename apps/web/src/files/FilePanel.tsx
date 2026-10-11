@@ -9,24 +9,24 @@ import { CodeBlock, EmptyNote, ErrorNote } from '../ui/primitives.tsx';
 
 /**
  * 表示中のターン時点のファイルの閲覧。ファイルはエージェントだけが書き込み、ここでは読み取り専用で表示する。
- * 実行中は、ファイルが変わるたびに取り直す。
+ * 実行中は、ツールの実行が終わるたびに取り直す。
  */
 export function FilePanel() {
   const activeTurn = useSession((s) => s.turns.find((t) => t.id === s.activeTurnId));
-  const activeEvents = useSession((s) => (s.activeTurnId ? s.events[s.activeTurnId] : undefined));
-  // 表示中のターンで変わったファイル。変わるたび、またターンが終わったときに取り直す目印にもする
-  const { changed, revision } = useMemo(() => {
-    const changes = (activeEvents ?? []).flatMap((e) => (e.type === 'file.change' ? [fileKey(e)] : []));
-    return { changed: new Set(changes), revision: `${changes.length}:${activeEvents?.some((e) => e.type === 'turn.finish')}` };
-  }, [activeEvents]);
-  const [files, setFiles] = useState<TurnFiles>({});
+  // ターン中のファイルの変更はツールの実行で起きるので、ツールの結果の数を取り直す目印にする。
+  // 設定から写した初期ファイルはツールを介さないため、ターンの終了でも取り直す
+  const revision = useSession((s) => {
+    const events = s.activeTurnId ? (s.events[s.activeTurnId] ?? []) : [];
+    return `${events.filter((e) => e.type === 'tool.result').length}:${events.some((e) => e.type === 'turn.finish')}`;
+  });
+  const [{ files, changed }, setFiles] = useState<TurnFiles>(noFiles);
   const [selected, setSelected] = useState<FileRef | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const activeTurnId = activeTurn?.id;
   useEffect(() => {
     if (!activeTurnId) {
-      setFiles({});
+      setFiles(noFiles);
       return;
     }
     let cancelled = false;
@@ -44,6 +44,10 @@ export function FilePanel() {
   }, [activeTurnId, revision]);
 
   const groups = Object.entries(files).filter(([, group]) => Object.keys(group).length > 0);
+  const changedKeys = useMemo(
+    () => new Set(Object.entries(changed).flatMap(([filesNodeId, paths]) => paths.map((path) => fileKey({ filesNodeId, path })))),
+    [changed],
+  );
   const content = selected ? files[selected.filesNodeId]?.[selected.path] : undefined;
 
   return (
@@ -58,7 +62,7 @@ export function FilePanel() {
               {groups.map(([filesNodeId, group]) => (
                 <div key={filesNodeId}>
                   <div className="py-1 text-sm font-semibold text-muted">{activeTurn ? nodeTitle(activeTurn.graph, filesNodeId) : filesNodeId}</div>
-                  <TreeView nodes={treeOf(filesNodeId, Object.keys(group))} changed={changed} selected={selected} onSelect={setSelected} />
+                  <TreeView nodes={treeOf(filesNodeId, Object.keys(group))} changed={changedKeys} selected={selected} onSelect={setSelected} />
                 </div>
               ))}
             </div>
@@ -87,6 +91,8 @@ export function FilePanel() {
 
 const paneBody = 'h-full overflow-auto px-1.5 py-1';
 
+const noFiles: TurnFiles = { files: {}, changed: {} };
+
 type FileRef = { filesNodeId: string; path: string };
 
 /** パスを / で区切った木の1要素。ファイルなら file を、フォルダなら children を持つ */
@@ -108,7 +114,7 @@ function TreeView(props: { nodes: TreeNode[]; changed: Set<string>; selected: Fi
             >
               {node.name}
               {changed.has(fileKey(node.file)) && (
-                <span className="text-3xs text-accent" title="このターンで変更されたファイル">
+                <span className="text-3xs text-accent" title="このターンで追加・変更されたファイル">
                   ●
                 </span>
               )}

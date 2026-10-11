@@ -15,7 +15,7 @@ import {
   type RunEventOf,
 } from 'protocol';
 import { db, sessions } from '../db/index.ts';
-import { abortTurn, followTurn, startTurn } from './index.ts';
+import { abortTurn, followTurn, startTurn, turnFiles } from './index.ts';
 
 /** モデルID ごとに、受け取ったプロンプトから返すストリームを決める台本 */
 const scripts = new Map<string, (prompt: LanguageModelV3Prompt, options: LanguageModelV3CallOptions) => ReadableStream<LanguageModelV3StreamPart>>();
@@ -202,7 +202,8 @@ describe('ターン実行', () => {
     const readAfter = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: written[0].turnId });
     const readElsewhere = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: null });
 
-    expect(ofType(written, 'file.change')).toMatchObject([{ filesNodeId: 'work', path: 'memo.md', deleted: false, nodeId: 'main' }]);
+    expect(turnFiles(written[0].turnId)).toEqual({ files: { work: { 'memo.md': 'メモ' } }, changed: { work: ['memo.md'] } });
+    expect(turnFiles(readAfter[0].turnId)).toEqual({ files: { work: { 'memo.md': 'メモ' } }, changed: {} });
     expect(ofType(readAfter, 'tool.result')[0]).toMatchObject({ output: 'メモ', isError: false });
     expect(ofType(readElsewhere, 'tool.result')[0]).toMatchObject({ isError: true });
   });
@@ -243,6 +244,8 @@ describe('ターン実行', () => {
     const readElsewhere = await runTurn(graph, '見て', undefined, { sessionId, parentTurnId: null });
 
     expect(ofType(edited, 'tool.result')[0]).toMatchObject({ isError: false });
+    expect(turnFiles(edited[0].turnId)?.changed).toEqual({ inventory: ['items.json'] });
+    expect(turnFiles(readAfter[0].turnId)?.changed).toEqual({});
     expect(JSON.parse(ofType(readAfter, 'tool.result')[0].output as string)).toEqual({ count: 2 });
     expect(JSON.parse(ofType(readElsewhere, 'tool.result')[0].output as string)).toEqual({ count: 1 });
     expect(graph.nodes.find((n) => n.kind === 'files')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });

@@ -4,7 +4,7 @@ import { nodeTitle } from '../graph/kinds';
 import { Markdown } from '../markdown/Markdown';
 import { branchFrom, showBranch, showTurnGraph, siblingsOf, useSession } from '../session/store';
 import { CodeBlock, CopyButton, Disclosure, ErrorNote, Pending } from '../ui/primitives';
-import { buildTurnTree, type CallNote, type CallView, type StepView, type ToolCallView } from './callTree';
+import { buildTurnTree, type CallView, type StepView, type ToolCallView, type TurnLog } from './callTree';
 import { formatDuration, metricsOf, TotalsLine } from './totals';
 
 /**
@@ -13,7 +13,7 @@ import { formatDuration, metricsOf, TotalsLine } from './totals';
  */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
   const events = useSession((s) => s.events[turn.id]);
-  const { calls, totals, notes } = useMemo(() => buildTurnTree(events ?? []), [events]);
+  const { calls, totals, logs } = useMemo(() => buildTurnTree(events ?? []), [events]);
   const turnError = finishErrorOf(events);
   const [editing, setEditing] = useState(false);
   const graph = turn.graph;
@@ -38,7 +38,7 @@ export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
         </>
       )}
       <div className="wrap-break-word">
-        <Notes notes={notes} graph={graph} />
+        <Logs logs={logs} />
         {turn.status === 'running' ? (
           <>
             {totals.steps > 1 && <TotalsLine className="my-1 text-muted" totals={totals} />}
@@ -156,7 +156,6 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
         <Step key={step.index} callId={call.callId} step={step} graph={graph} />
       ))}
       {call.steps.length === 0 && (call.status === 'running' ? <Pending /> : call.output !== null && !call.error && <ValueBlock value={call.output} />)}
-      <Notes notes={call.notes} graph={graph} />
       {call.error && <ErrorNote>{call.error}</ErrorNote>}
     </>
   );
@@ -224,12 +223,7 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
     );
     return (
       <Entry status={child.status} label={label} metrics={metrics}>
-        {() => (
-          <>
-            <Notes notes={tool.notes} graph={graph} />
-            <CallBody call={child} graph={graph} />
-          </>
-        )}
+        {() => <CallBody call={child} graph={graph} />}
       </Entry>
     );
   }
@@ -239,7 +233,6 @@ function ToolCall({ tool, graph }: { tool: ToolCallView; graph: GraphDefinition 
         <>
           <ValueBlock value={tool.input} />
           {result && <ValueBlock value={result.output} />}
-          <Notes notes={tool.notes} graph={graph} />
         </>
       )}
     </Entry>
@@ -274,19 +267,13 @@ function Entry({ status, label, metrics, children }: { status: RunStatus; label:
 /** 折りたたみを開いたときの中身。入れ子が分かるよう字下げして線を引く */
 const nested = 'my-1 ml-1 border-l-2 pl-3';
 
-/** ログやファイルの変更の記録 */
-function Notes({ notes, graph }: { notes: CallNote[]; graph: GraphDefinition }) {
-  return notes.map((note, i) =>
-    note.type === 'log' ? (
-      <div key={i} className={`text-sm ${logColors[note.level]}`}>
-        {note.message}
-      </div>
-    ) : (
-      <div key={i} className="text-sm text-muted">
-        {note.deleted ? '削除' : '書き込み'} {nodeTitle(graph, note.filesNodeId)}:{note.path}
-      </div>
-    ),
-  );
+/** ターン全体についての記録 */
+function Logs({ logs }: { logs: TurnLog[] }) {
+  return logs.map((log, i) => (
+    <div key={i} className={`text-sm ${logColors[log.level]}`}>
+      {log.message}
+    </div>
+  ));
 }
 
 const logColors: Record<RunEventOf<'log'>['level'], string> = {

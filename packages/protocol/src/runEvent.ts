@@ -34,8 +34,7 @@ export type RunEventBody =
   | { type: 'step.finish'; step: StepRecord }
   | { type: 'tool.call'; toolCallId: string; toolName: string; input: unknown }
   | { type: 'tool.result'; toolCallId: string; toolName: string; output: unknown; isError: boolean }
-  /** files ノード（filesNodeId）のファイルの変更 */
-  | { type: 'file.change'; filesNodeId: string; path: string; deleted: boolean }
+  /** ターン全体についての記録（フローで飛ばしたノードなど）。どの呼び出しにも属さない */
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
   /** output は呼び出し元へ返す、またはフローで後段へ流すテキスト */
   | { type: 'call.finish'; status: RunStatus; output: string; error: string | null }

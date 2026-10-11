@@ -10,11 +10,12 @@ import { parseBody } from './parseBody.ts';
 
 /** copyFrom を指定すると、そのセッションのグラフを写して始める。無ければ既定のグラフ */
 const createSchema = z.object({ copyFrom: z.string().optional() });
-const updateSchema = z.object({
-  title: z.string().min(1).optional(),
-  graph: graphDefinitionSchema.optional(),
-  activeTurnId: z.string().nullable().optional(),
-});
+const updateSchema = z
+  .strictObject({
+    graph: graphDefinitionSchema.optional(),
+    activeTurnId: z.string().nullable().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, '更新する項目がありません');
 const createTurnSchema = z.object({ parentTurnId: z.string().nullable(), userText: z.string().min(1) });
 
 /** セッションの一覧・作成・更新・削除と、ターンの開始 */

@@ -144,8 +144,7 @@ function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, header: CallHeader, d
     if (!target || target.kind === 'user') continue;
     if (target.kind === 'files') {
       const group = new FileGroup((scope.state.files[target.id] ??= {}), () => scope.saveState());
-      const changed = (path: string, deleted: boolean) => scope.emit(header, { type: 'file.change', filesNodeId: target.id, path, deleted });
-      Object.assign(tools, fileTools(target, edge.permission, group, changed));
+      Object.assign(tools, fileTools(target, edge.permission, group));
     } else {
       tools[target.config.name] = nodeTool(scope, target, header.callId, depth + 1);
     }

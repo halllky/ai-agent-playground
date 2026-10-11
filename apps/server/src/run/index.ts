@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
 import { asc, eq, max } from 'drizzle-orm';
-import type { GraphDefinition, RunEvent, RunEventBody, TurnRecord } from 'protocol';
+import type { FilesByNode, GraphDefinition, RunEvent, RunEventBody, TurnFiles, TurnRecord } from 'protocol';
 import { db, runEvents, turns, type TurnState } from '../db/index.ts';
 import { FileError, FileGroup } from './files.ts';
 import { runFlow, type FlowOutcome } from './flow.ts';
@@ -52,6 +52,16 @@ export function followTurn(turnId: string, listener: RunListener): { live: boole
   for (const row of saved) listener(row.event);
   const run = activeRuns.get(turnId);
   return { live: run !== undefined, stop: run?.subscribe(listener) ?? (() => { }) };
+}
+
+/**
+ * ターン時点（実行中なら今）のファイルと、親ターンの時点から変わったパス。ターンが無ければ undefined。
+ * このターンで初めて使われた files ノードでは、設定から写したファイルも変わったものに含まれる
+ */
+export function turnFiles(turnId: string): TurnFiles | undefined {
+  const turn = db.select({ parentTurnId: turns.parentTurnId, state: turns.state }).from(turns).where(eq(turns.id, turnId)).get();
+  if (!turn) return undefined;
+  return { files: turn.state.files, changed: changedPaths(stateAfter(turn.parentTurnId).files, turn.state.files) };
 }
 
 /** サーバー停止で中断されたまま残っているターンを、エラー終了として閉じる */
@@ -146,6 +156,18 @@ const turnHeader: CallHeader = { callId: null, parentCallId: null, nodeId: null 
 function stateAfter(parentTurnId: string | null): TurnState {
   const parent = parentTurnId ? db.select({ state: turns.state }).from(turns).where(eq(turns.id, parentTurnId)).get() : undefined;
   return parent?.state ?? { files: {}, memories: {} };
+}
+
+/** before から after までに追加・変更・削除されたパス。files ノードの id ごとに、変わったものがあるノードだけ */
+function changedPaths(before: FilesByNode, after: FilesByNode): TurnFiles['changed'] {
+  const changed: TurnFiles['changed'] = {};
+  for (const nodeId of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const old = before[nodeId] ?? {};
+    const now = after[nodeId] ?? {};
+    const paths = [...new Set([...Object.keys(old), ...Object.keys(now)])].filter((path) => old[path] !== now[path]);
+    if (paths.length > 0) changed[nodeId] = paths.sort();
+  }
+  return changed;
 }
 
 /** parentTurnId までの分岐をたどった、ユーザーの発言と返答の会話 */

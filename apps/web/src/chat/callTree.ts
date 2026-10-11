@@ -7,8 +7,8 @@ export type TurnTree = {
   calls: CallView[];
   /** ターン全体のステップの集計 */
   totals: Totals;
-  /** どの呼び出しにも属さない、ターン全体についての記録 */
-  notes: CallNote[];
+  /** ターン全体についての記録（フローで飛ばしたノードなど） */
+  logs: TurnLog[];
 };
 
 /** ノードの呼び出し1回分の表示内容 */
@@ -24,8 +24,6 @@ export type CallView = {
   steps: StepView[];
   /** 入れ子の呼び出しのステップも含めた集計 */
   totals: Totals;
-  /** どのツールコールにも対応付けられなかった記録 */
-  notes: CallNote[];
 };
 
 /** LLM への1リクエストと、その応答で行ったツールコール */
@@ -43,20 +41,18 @@ export type ToolCallView = {
   input: unknown;
   startedAt: number;
   result?: { output: unknown; isError: boolean; durationMs: number };
-  /** ツールの実行中に出たログやファイルの変更 */
-  notes: CallNote[];
   /** このツールコールがノードの呼び出しなら、その中身 */
   child?: CallView;
 };
 
-/** 応答の本文とは別に残る記録 */
-export type CallNote = Pick<RunEventOf<'log'>, 'type' | 'level' | 'message'> | Pick<RunEventOf<'file.change'>, 'type' | 'filesNodeId' | 'path' | 'deleted'>;
+/** ターン全体についての記録1件 */
+export type TurnLog = Pick<RunEventOf<'log'>, 'level' | 'message'>;
 
 /** ターンのイベント列から、呼び出しの入れ子を組み立てる */
 export function buildTurnTree(events: RunEvent[]): TurnTree {
   const calls = new Map<string, CallView>();
-  const tree: TurnTree = { calls: [], totals: totalsOf([]), notes: [] };
-  /** 呼び出しで行ったツールコール。ツールは呼び出しごとに呼ばれた順で1つずつ実行されるので、結果が届いていない最初のものが実行中のものになる */
+  const tree: TurnTree = { calls: [], totals: totalsOf([]), logs: [] };
+  /** 呼び出しで行ったツールコール */
   const toolsOf = (call: CallView) => call.steps.flatMap((step) => step.tools);
 
   for (const event of events) {
@@ -72,7 +68,6 @@ export function buildTurnTree(events: RunEvent[]): TurnTree {
           error: null,
           steps: [],
           totals: totalsOf([]),
-          notes: [],
         };
         calls.set(created.callId, created);
         const parent = event.parentCallId ? calls.get(event.parentCallId) : undefined;
@@ -85,7 +80,7 @@ export function buildTurnTree(events: RunEvent[]): TurnTree {
         call?.steps.push({ index: event.index, tools: [] });
         break;
       case 'tool.call':
-        call?.steps.at(-1)?.tools.push({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.input, startedAt: event.at, notes: [] });
+        call?.steps.at(-1)?.tools.push({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.input, startedAt: event.at });
         break;
       case 'tool.result': {
         const tool = call && toolsOf(call).find((t) => t.toolCallId === event.toolCallId);
@@ -93,15 +88,8 @@ export function buildTurnTree(events: RunEvent[]): TurnTree {
         break;
       }
       case 'log':
-      case 'file.change': {
-        const note: CallNote =
-          event.type === 'log'
-            ? { type: event.type, level: event.level, message: event.message }
-            : { type: event.type, filesNodeId: event.filesNodeId, path: event.path, deleted: event.deleted };
-        const notes = call ? (toolsOf(call).find((t) => !t.result)?.notes ?? call.notes) : tree.notes;
-        notes.push(note);
+        tree.logs.push({ level: event.level, message: event.message });
         break;
-      }
       case 'step.finish': {
         const step = call?.steps.at(-1);
         if (step) step.record = event.step;
