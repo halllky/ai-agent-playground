@@ -106,10 +106,11 @@ export function ModelField(props: { provider: ModelProvider; value: string; onCh
   );
 }
 
+/** 入力欄と、その見出し。見出しが空なら出さない（直前の小見出しが見出しを兼ねるとき） */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="mb-2 flex flex-col gap-0.5">
-      <span className={fieldNote}>{label}</span>
+      {label && <span className={fieldNote}>{label}</span>}
       {children}
     </label>
   );

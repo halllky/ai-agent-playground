@@ -35,6 +35,7 @@ export function Inspector(props: {
         <WarningList messages={warningsOf({ nodeId: node.id })} />
         <view.Inspector
           node={node}
+          graph={definition}
           onChange={(changed) => updateGraph((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === changed.id ? changed : n)) }))}
         />
       </fieldset>

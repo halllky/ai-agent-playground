@@ -1,50 +1,58 @@
 import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provider';
-import { stepCountIs, streamText, tool, wrapLanguageModel, type ModelMessage, type StepResult, type Tool, type ToolSet } from 'ai';
+import {
+  stepCountIs,
+  streamText,
+  tool,
+  wrapLanguageModel,
+  type ModelMessage,
+  type StepResult,
+  type StopCondition,
+  type Tool,
+  type ToolSet,
+} from 'ai';
 import { z } from 'zod';
-import type { NodeOf, RunEventBody, RunStatus, StepRecord } from 'protocol';
+import { finishToolName, type NodeOf, type RunEventBody, type RunStatus, type StepRecord } from 'protocol';
 import { languageModel, stepCost } from '../../llm/index.ts';
-import type { Invocation, RunScope, ToolCall } from '../invoke.ts';
+import type { RunScope, ToolCall } from '../invoke.ts';
+import { Workfolder } from './files.ts';
 
-/** エージェントの呼び出し1回分の結果。失敗したら output はその理由 */
+/** エージェントの呼び出し1回分の結果。失敗したら output はその理由。返すものが「なし」なら成功時の output は null */
 export type AgentOutcome = {
   status: Exclude<RunStatus, 'running'>;
-  output: string;
+  output: string | null;
   error: string | null;
 };
 
 /**
- * エージェントを記憶とあわせて呼び出し、今回の会話を記憶に残す。
+ * エージェントに task を依頼する。LLM には記憶に続けて、会話履歴・添付ファイル・依頼を並べた今回のメッセージを渡し、
+ * 記憶には依頼とそれへの応答だけを残す（会話履歴と添付ファイルは呼び出しのたびに今の内容で作り直す）。
  * LLM をツールコールのループが終わるまで進め、ステップ・テキスト・ツールのイベントを emit に流す。
  * LLM 呼び出しの失敗や Abort は例外にせず、結果の status として返す。
  */
 export async function invokeAgent(
   scope: RunScope,
   node: NodeOf<'agent'>,
-  inv: Pick<Invocation, 'input' | 'conversation'>,
+  task: string,
   tools: ToolSet,
   emit: (body: RunEventBody) => void,
 ): Promise<AgentOutcome> {
   const memory = recallMemory(scope, node);
-  const userMessage: ModelMessage = { role: 'user', content: promptOf(node.config.pass, inv.input, inv.conversation) };
-  const loop = await runLoop(node, [...memory, userMessage], tools, scope.signal, emit);
-  storeMemory(scope, node, [...memory, userMessage, ...loop.responseMessages]);
+  const message: ModelMessage = { role: 'user', content: currentMessageOf(scope, node, task) };
+  const loop = await runLoop(node, [...memory, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
+  storeMemory(scope, node, [...memory, { role: 'user', content: task }, ...loop.responseMessages]);
   return { status: loop.status, output: loop.error ?? loop.output, error: loop.error };
 }
 
-/** エージェントを、別のエージェントが呼び出すツールにする */
+/** エージェントを、別のエージェントが呼び出すツールにする。返すものが「なし」なら、終わったことだけを返す */
 export function agentTool(node: NodeOf<'agent'>, call: ToolCall): Tool {
-  // 会話だけを渡す呼び出し方なら、呼び出し元は指示を書かない
-  if (node.config.pass === 'history') {
-    return tool({ description: node.config.description, inputSchema: z.object({}), execute: (_, options) => call('', options) });
-  }
   return tool({
     description: node.config.description,
     inputSchema: z.object({ task: z.string().describe('エージェントに依頼する内容') }),
-    execute: ({ task }, options) => call(task, options),
+    execute: async ({ task }, options) => (await call(task, options)) ?? '完了しました（このエージェントは結果を返しません）',
   });
 }
 
-/** エージェントの過去の会話。セッション継続の記憶は、親ターンから受け継いだ状態に入っている */
+/** エージェントの過去の呼び出しでの依頼と応答。セッション継続の記憶は、親ターンから受け継いだ状態に入っている */
 function recallMemory(scope: RunScope, node: NodeOf<'agent'>): ModelMessage[] {
   switch (node.config.memory) {
     case 'fresh':
@@ -70,47 +78,72 @@ function storeMemory(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMess
   }
 }
 
-/** エージェントに渡す、今回の依頼のメッセージ本文 */
-function promptOf(pass: NodeOf<'agent'>['config']['pass'], task: string, conversation: ModelMessage[]): string {
-  const caller = () => `<caller_conversation>\n${transcriptOf(conversation)}\n</caller_conversation>`;
-  switch (pass) {
-    case 'task':
-      return task;
-    case 'taskWithHistory':
-      return `${caller()}\n\n<task>\n${task}\n</task>`;
-    case 'history':
-      return caller();
+/**
+ * 今回のメッセージの本文。会話履歴・添付ファイル・依頼をこの順にタグで囲んで並べる。
+ * 会話履歴も添付ファイルも無ければ、依頼をそのまま本文にする
+ */
+function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string): string {
+  const conversation = conversationOf(scope.conversation, node.config);
+  const workfolder = new Workfolder(scope.state.files, () => {});
+  const sections = [
+    ...(conversation.length > 0 ? [`<conversation>\n${conversation.map(transcriptLineOf).join('\n')}\n</conversation>`] : []),
+    ...node.config.attachments.map((path) =>
+      workfolder.has(path) ? `<file path="${path}">\n${workfolder.read(path)}\n</file>` : `<file path="${path}" missing="true" />`,
+    ),
+  ];
+  return sections.length > 0 ? [...sections, `<task>\n${task}\n</task>`].join('\n\n') : task;
+}
+
+/** ユーザーとの会話のうち、history の設定で今回のメッセージに入れる分 */
+function conversationOf(conversation: ModelMessage[], config: NodeOf<'agent'>['config']): ModelMessage[] {
+  switch (config.history) {
+    case 'none':
+      return [];
+    case 'recent':
+      return conversation.slice(-config.historyLength);
+    case 'all':
+      return conversation;
   }
 }
 
-/**
- * 会話履歴を、別のエージェントに読ませるためのテキストにする。
- * メッセージのまま渡すと、相手が持たないツールのコール・結果が混ざってプロバイダに拒否されることがあるため、テキストにしている。
- */
-function transcriptOf(messages: ModelMessage[]): string {
-  return messages.flatMap(transcriptLinesOf).join('\n');
+/** ユーザーとの会話の発言1つ。発言と返答はどちらも文字列で持っている */
+function transcriptLineOf(message: ModelMessage): string {
+  return `[${message.role}] ${typeof message.content === 'string' ? message.content : ''}`;
 }
 
-function transcriptLinesOf(message: ModelMessage): string[] {
-  if (typeof message.content === 'string') return [`[${message.role}] ${message.content}`];
-  return message.content.flatMap((part): string[] => {
-    switch (part.type) {
-      case 'text':
-        return [`[${message.role}] ${part.text}`];
-      case 'tool-call':
-        return [`[tool call] ${part.toolName} ${JSON.stringify(part.input)}`];
-      case 'tool-result':
-        return [`[tool result] ${part.toolName} ${JSON.stringify(part.output)}`];
-      default:
-        return [];
-    }
-  });
+/**
+ * 返すものが「なし」のエージェントが持つ、作業を終えるためのツール。
+ * 呼んだステップのほかのツールがすべて成功していれば、応答の文章を待たずにループを止める（stopConditionsOf）
+ */
+function finishToolOf(node: NodeOf<'agent'>): ToolSet {
+  if (node.config.returns !== 'none') return {};
+  return {
+    [finishToolName]: tool({
+      description:
+        '作業がすべて終わったら呼ぶ。応答の文章は書かなくてよい。最後のツール呼び出しと同じ応答の中で呼んでよい。' +
+        '同じ応答の中のほかのツールが失敗したときは終了しないので、対処してから改めて呼ぶ',
+      inputSchema: z.object({}),
+      execute: async () => '同じ応答の中のほかのツールがすべて成功していれば、ここで終了します',
+    }),
+  };
 }
+
+function stopConditionsOf(node: NodeOf<'agent'>): StopCondition<ToolSet>[] {
+  const conditions = [stepCountIs(node.config.maxSteps)];
+  if (node.config.returns === 'none') conditions.push(finishedCleanly);
+  return conditions;
+}
+
+/** 最後のステップで終了用のツールが呼ばれ、そのステップのツールがどれも失敗していない */
+const finishedCleanly: StopCondition<ToolSet> = ({ steps }) => {
+  const last = steps.at(-1);
+  return !!last && last.toolCalls.some((c) => c.toolName === finishToolName) && !last.content.some((p) => p.type === 'tool-error');
+};
 
 /** LLM のループ1回分の結果。responseMessages はこの呼び出しで新たに生成されたメッセージで、Abort 時は途中までのテキストを含む */
 type LoopResult = AgentOutcome & { responseMessages: ModelMessage[] };
 
-/** LLM を、ツールコールのループが終わるまで進める。output はノードの returns 設定に従って呼び出し元へ返す文章 */
+/** LLM を、ツールコールのループが終わるまで進める。output はノードの returns 設定に従って呼び出し元へ返すもの */
 async function runLoop(
   node: NodeOf<'agent'>,
   messages: ModelMessage[],
@@ -134,7 +167,7 @@ async function runLoop(
     system: node.config.systemPrompt,
     messages,
     tools,
-    stopWhen: stepCountIs(node.config.maxSteps),
+    stopWhen: stopConditionsOf(node),
     abortSignal: signal,
     onStepFinish: (step) => {
       steps.push(step);
@@ -192,17 +225,22 @@ async function runLoop(
   };
 }
 
-function outputOf(node: NodeOf<'agent'>, steps: StepResult<ToolSet>[], partialText: string): string {
-  if (node.config.returns === 'allSteps') {
-    const summaries = steps.map((s) => ({
-      text: s.text,
-      toolCalls: s.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input })),
-      toolResults: s.toolResults.map((r) => ({ toolName: r.toolName, output: r.output })),
-    }));
-    if (partialText) summaries.push({ text: partialText, toolCalls: [], toolResults: [] });
-    return JSON.stringify(summaries, null, 2);
+function outputOf(node: NodeOf<'agent'>, steps: StepResult<ToolSet>[], partialText: string): string | null {
+  switch (node.config.returns) {
+    case 'none':
+      return null;
+    case 'allSteps': {
+      const summaries = steps.map((s) => ({
+        text: s.text,
+        toolCalls: s.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input })),
+        toolResults: s.toolResults.map((r) => ({ toolName: r.toolName, output: r.output })),
+      }));
+      if (partialText) summaries.push({ text: partialText, toolCalls: [], toolResults: [] });
+      return JSON.stringify(summaries, null, 2);
+    }
+    case 'finalText':
+      return partialText || steps.at(-1)?.text || '';
   }
-  return partialText || steps.at(-1)?.text || '';
 }
 
 async function stepRecordOf(node: NodeOf<'agent'>, step: StepResult<ToolSet>, durationMs: number): Promise<StepRecord> {

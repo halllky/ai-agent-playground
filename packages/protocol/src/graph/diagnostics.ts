@@ -1,7 +1,7 @@
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from '../model.ts';
 import { canConnect, flowOrder } from './connections.ts';
-import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion } from './schema.ts';
-import { filePathError, toolNamePattern, toolNamesOf } from './tools.ts';
+import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion, type NodeOf } from './schema.ts';
+import { agentToolNames, filePathError, folderLabel, folderPathError, pathInFolder, toolNamePattern } from './tools.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
 export type GraphWarning = {
@@ -28,19 +28,23 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
     graphWarning('ユーザーへ何も流れ込まないため、返答が空になります');
   }
 
+  warnings.push(...folderOverlapWarnings(graph));
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
+    if (node.kind !== 'user' && node.kind !== 'files' && emptyTaskIsFlowing(graph, node.id, nodeById)) {
+      warnings.push({ target: { nodeId: node.id }, message: '「呼び出し元へ返すもの」が「なし」のエージェントからしか流れてこないので、受け取る内容が空になります' });
+    }
     if (node.kind !== 'agent') continue;
-    const tools = graph.edges.filter((e) => e.source === node.id && e.kind === 'tool');
+    const toolNames = agentToolNames(graph, node);
     const catalog = models[node.config.provider];
     const model = catalog?.find((m) => m.id === node.config.model);
     if (catalog && !model) {
       warnings.push({ target: { nodeId: node.id }, message: `${modelProviderLabels[node.config.provider]} のモデル一覧に ${node.config.model} がありません` });
     }
-    if (model && !model.supportsTools && tools.length > 0) {
+    if (model && !model.supportsTools && toolNames.length > 0) {
       warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルにツールが付いています' });
     }
-    warnings.push(...duplicateToolNameWarnings(node, tools, nodeById));
+    warnings.push(...duplicateToolNameWarnings(toolNames).map((message) => ({ target: { nodeId: node.id }, message })));
   }
 
   for (const edge of graph.edges) {
@@ -62,15 +66,14 @@ function configWarnings(node: GraphNode): string[] {
     case 'user':
       return [];
     case 'agent':
+      return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...agentConfigWarnings(node.config)];
     case 'webSearch':
       return toolNamePattern.test(node.config.name) ? [] : [toolNameMessage];
     case 'judge':
       return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...judgeQuestionWarnings(node.config.questions)];
     case 'files': {
-      // 最も長い操作名を付けてもツール名に収まるか
-      const messages = toolNamePattern.test(`${node.config.name}_edit_markdown`)
-        ? []
-        : ['名前は半角英数字・_・- の50文字以内にしてください（ツール名の接頭辞になります）'];
+      const folderError = folderPathError(node.config.path);
+      const messages = folderError ? [folderError] : [];
       for (const file of node.config.files) {
         const pathError = filePathError(file.path);
         if (pathError) messages.push(pathError);
@@ -82,6 +85,44 @@ function configWarnings(node: GraphNode): string[] {
 }
 
 const toolNameMessage = 'ツール名は半角英数字・_・- の64文字以内にしてください';
+
+function agentConfigWarnings(config: NodeOf<'agent'>['config']): string[] {
+  const messages = config.attachments.flatMap((path) => {
+    const error = filePathError(path);
+    return error ? [`ワークフォルダのファイル: ${error}`] : [];
+  });
+  if (config.memory === 'session' && config.history !== 'none') {
+    messages.push('「前回までの依頼と応答」を「このセッションの分」にしているので、「ユーザーとの会話」も含めると、これまでの発言が二重に入ります');
+  }
+  return messages;
+}
+
+/** 同じパスのフォルダや、複数のフォルダが同じパスに写す初期ファイル */
+function folderOverlapWarnings(graph: GraphDefinition): GraphWarning[] {
+  const warnings: GraphWarning[] = [];
+  const folderOwners = new Map<string, string>();
+  const fileOwners = new Map<string, string>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'files') continue;
+    const folder = node.config.path;
+    if (folderOwners.has(folder)) warnings.push({ target: { nodeId: node.id }, message: `フォルダ ${folderLabel(folder)} のノードがほかにもあります` });
+    folderOwners.set(folder, node.id);
+    for (const file of node.config.files) {
+      const path = pathInFolder(folder, file.path);
+      if (fileOwners.has(path) && fileOwners.get(path) !== node.id) {
+        warnings.push({ target: { nodeId: node.id }, message: `会話の最初に置くファイル ${path} が、ほかのフォルダにもあります。先に置いたほうが残ります` });
+      }
+      fileOwners.set(path, node.id);
+    }
+  }
+  return warnings;
+}
+
+/** nodeId へのフローがあり、その送り元がすべて返すもの「なし」のエージェントか */
+function emptyTaskIsFlowing(graph: GraphDefinition, nodeId: string, nodeById: Map<string, GraphNode>): boolean {
+  const sources = graph.edges.filter((e) => e.kind === 'flow' && e.target === nodeId).map((e) => nodeById.get(e.source));
+  return sources.length > 0 && sources.every((s) => s?.kind === 'agent' && s.config.returns === 'none');
+}
 
 function judgeQuestionWarnings(questions: JudgeQuestion[]): string[] {
   if (questions.length === 0) return ['質問が1つ以上必要です'];
@@ -121,15 +162,7 @@ function isJson(text: string): boolean {
   }
 }
 
-function duplicateToolNameWarnings(node: GraphNode, tools: GraphDefinition['edges'], nodeById: Map<string, GraphNode>): GraphWarning[] {
-  const seen = new Set<string>();
-  const duplicates = new Set<string>();
-  for (const edge of tools) {
-    const target = nodeById.get(edge.target);
-    for (const name of target ? toolNamesOf(edge, target) : []) {
-      if (seen.has(name)) duplicates.add(name);
-      seen.add(name);
-    }
-  }
-  return [...duplicates].map((name) => ({ target: { nodeId: node.id }, message: `ツール名 ${name} が重複しています` }));
+function duplicateToolNameWarnings(toolNames: string[]): string[] {
+  const duplicates = toolNames.filter((name, i) => toolNames.indexOf(name) !== i);
+  return [...new Set(duplicates)].map((name) => `ツール名 ${name} が重複しています`);
 }

@@ -202,8 +202,8 @@ describe('ターン実行', () => {
     const readAfter = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: written[0].turnId });
     const readElsewhere = await runTurn(graph, '読んで', undefined, { sessionId, parentTurnId: null });
 
-    expect(turnFiles(written[0].turnId)).toEqual({ files: { work: { 'memo.md': 'メモ' } }, changed: { work: ['memo.md'] } });
-    expect(turnFiles(readAfter[0].turnId)).toEqual({ files: { work: { 'memo.md': 'メモ' } }, changed: {} });
+    expect(turnFiles(written[0].turnId)).toEqual({ files: { 'memo.md': 'メモ' }, changed: ['memo.md'] });
+    expect(turnFiles(readAfter[0].turnId)).toEqual({ files: { 'memo.md': 'メモ' }, changed: [] });
     expect(ofType(readAfter, 'tool.result')[0]).toMatchObject({ output: 'メモ', isError: false });
     expect(ofType(readElsewhere, 'tool.result')[0]).toMatchObject({ isError: true });
   });
@@ -225,8 +225,8 @@ describe('ターン実行', () => {
       if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
       return streamOf(
         userTextOf(prompt) === '増やして'
-          ? toolCallParts([{ name: 'inventory_patch_json', input: { path: 'items.json', operations: [{ op: 'replace', path: '/count', value: 2 }] } }])
-          : toolCallParts([{ name: 'inventory_read', input: { path: 'items.json' } }]),
+          ? toolCallParts([{ name: 'workfolder_patch_json', input: { path: 'stock/items.json', operations: [{ op: 'replace', path: '/count', value: 2 }] } }])
+          : toolCallParts([{ name: 'workfolder_read', input: { path: 'stock/items.json' } }]),
       );
     });
     const graph = graphWithMain();
@@ -234,7 +234,7 @@ describe('ターン実行', () => {
       id: 'inventory',
       kind: 'files',
       position: { x: 0, y: 0 },
-      config: { name: 'inventory', description: '在庫', files: [{ path: 'items.json', content: '{"count":1}' }] },
+      config: { path: 'stock', description: '在庫', files: [{ path: 'items.json', content: '{"count":1}' }] },
     });
     graph.edges.push(toolEdge('main', 'inventory', 'write'));
     const sessionId = createSession(graph);
@@ -244,8 +244,8 @@ describe('ターン実行', () => {
     const readElsewhere = await runTurn(graph, '見て', undefined, { sessionId, parentTurnId: null });
 
     expect(ofType(edited, 'tool.result')[0]).toMatchObject({ isError: false });
-    expect(turnFiles(edited[0].turnId)?.changed).toEqual({ inventory: ['items.json'] });
-    expect(turnFiles(readAfter[0].turnId)?.changed).toEqual({});
+    expect(turnFiles(edited[0].turnId)?.changed).toEqual(['stock/items.json']);
+    expect(turnFiles(readAfter[0].turnId)?.changed).toEqual([]);
     expect(JSON.parse(ofType(readAfter, 'tool.result')[0].output as string)).toEqual({ count: 2 });
     expect(JSON.parse(ofType(readElsewhere, 'tool.result')[0].output as string)).toEqual({ count: 1 });
     expect(graph.nodes.find((n) => n.kind === 'files')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });
@@ -329,24 +329,106 @@ describe('ターン実行', () => {
     expect(ofType(tooLarge, 'tool.result')[0]).toMatchObject({ isError: true });
   });
 
-  it('会話だけを渡すエージェントでは、ツールに指示の引数を持たせず、呼び出し元の会話だけを渡す', async () => {
-    let inputSchema: unknown;
-    let subPrompt = '';
+  it('フォルダごとの権限で読み書きでき、ワークフォルダのツールは1組にまとまる', async () => {
+    let toolNames: string[] = [];
     scripts.set('main', (prompt, options) => {
-      const tool = options.tools?.find((t) => t.name === 'researcher');
-      inputSchema = tool?.type === 'function' ? tool.inputSchema : undefined;
-      return lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: {} }]));
+      toolNames = (options.tools ?? []).map((t) => t.name);
+      return lastIsToolResult(prompt)
+        ? streamOf(textParts('ok'))
+        : streamOf(
+            toolCallParts([
+              { name: 'workfolder_write', input: { path: 'notes/a.md', content: 'x' } },
+              { name: 'workfolder_write', input: { path: 'drafts/b.md', content: 'y' } },
+              { name: 'workfolder_read', input: { path: 'other/c.md' } },
+              { name: 'workfolder_list', input: {} },
+            ]),
+          );
     });
+    const graph = graphWithMain();
+    graph.nodes.push(folderOf('notes', 'notes', []), folderOf('drafts', 'drafts', []), folderOf('other', 'other', [{ path: 'c.md', content: 'z' }]));
+    graph.edges.push(toolEdge('main', 'notes', 'read'), toolEdge('main', 'drafts', 'write'));
+
+    const events = await runTurn(graph, '書いて');
+
+    expect(toolNames.sort()).toEqual(fileToolNames);
+    const results = ofType(events, 'tool.result');
+    expect(results[0]).toMatchObject({ isError: true, output: expect.stringContaining('編集できる範囲: drafts/') });
+    expect(results[1]).toMatchObject({ isError: false });
+    expect(results[2]).toMatchObject({ isError: true, output: expect.stringContaining('参照する権限がありません') });
+    expect(results[3]).toMatchObject({ output: ['drafts/b.md'] });
+    expect(turnFiles(events[0].turnId)?.files).toEqual({ 'drafts/b.md': 'y', 'other/c.md': 'z' });
+  });
+
+  it('今回のメッセージには直近の会話・添付ファイル・依頼を並べ、記憶には依頼と応答だけを残す', async () => {
+    const prompts: string[][] = [];
+    scripts.set('main', (prompt) => {
+      prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
+      return streamOf(textParts(`返事${prompts.length}`));
+    });
+    const graph = graphWithMain();
+    const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
+    main.config = { ...main.config, history: 'recent', historyLength: 2, attachments: ['notes/概要.md', 'notes/無い.md'] };
+    graph.nodes.push(folderOf('notes', 'notes', [{ path: '概要.md', content: '# 概要' }]));
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+
+    expect(prompts[1]).toEqual([
+      '一つ目',
+      '返事1',
+      [
+        '<conversation>\n[assistant] 返事1\n[user] 二つ目\n</conversation>',
+        '<file path="notes/概要.md">\n# 概要\n</file>',
+        '<file path="notes/無い.md" missing="true" />',
+        '<task>\n二つ目\n</task>',
+      ].join('\n\n'),
+    ]);
+  });
+
+  it('ツールとして呼ばれたエージェントの会話履歴は、呼び出し元の会話ではなくユーザーとの会話', async () => {
+    let subPrompt = '';
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: '調べて' } }])),
+    );
     scripts.set('sub', (prompt) => {
       subPrompt = userTextOf(prompt);
-      return streamOf(textParts('読みました'));
+      return streamOf(textParts('調べました'));
     });
 
-    const events = await runTurn(graphOf({ pass: 'history' }), '旅行の計画を立てたい');
+    await runTurn(graphOf({ history: 'all' }), '旅行の計画を立てたい');
 
-    expect(inputSchema).toMatchObject({ properties: {} });
-    expect(subPrompt).toBe('<caller_conversation>\n[user] 旅行の計画を立てたい\n</caller_conversation>');
-    expect(ofType(events, 'call.start').find((e) => e.nodeId === 'researcher')).toMatchObject({ input: '' });
+    expect(subPrompt).toBe('<conversation>\n[user] 旅行の計画を立てたい\n</conversation>\n\n<task>\n調べて\n</task>');
+  });
+
+  it('返すものが「なし」なら、終了用のツールで応答を待たずに終え、後段には順序だけを伝える', async () => {
+    const mainPrompts: string[] = [];
+    let secretaryCalls = 0;
+    scripts.set('main', (prompt) => {
+      mainPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('回答'));
+    });
+    scripts.set('sub', () => {
+      secretaryCalls++;
+      // 1回目は書き込みが失敗するので終了せず、2回目で書き込みと終了を同じ応答で行う
+      const path = secretaryCalls === 1 ? '../x.md' : 'notes/概要.md';
+      return streamOf(
+        toolCallParts([
+          { name: 'workfolder_write', input: { path, content: '更新' } },
+          { name: 'finish', input: {} },
+        ]),
+      );
+    });
+    const graph = graphWithMain();
+    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }), folderOf('notes', 'notes', []));
+    graph.edges = [flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('user', 'main'), flowEdge('main', 'user'), toolEdge('secretary', 'notes', 'write')];
+
+    const events = await runTurn(graph, 'こんにちは');
+
+    expect(secretaryCalls).toBe(2);
+    expect(mainPrompts).toEqual(['こんにちは']);
+    expect(ofType(events, 'call.finish').find((e) => e.nodeId === 'secretary')).toMatchObject({ status: 'done', output: '' });
+    expect(turnFiles(events[0].turnId)?.files).toEqual({ 'notes/概要.md': '更新' });
   });
 
   it('フローのノードを流れの順に実行して後段に出力を渡し、条件を満たさないノードは飛ばす', async () => {
@@ -450,7 +532,7 @@ function graphOf(researcher: Partial<NodeOf<'agent'>['config']>): GraphDefinitio
   return graph;
 }
 
-/** id をツール名にもするエージェント。指定がなければ task / finalText / fresh で呼ばれる */
+/** id をツール名にもするエージェント。指定がなければ会話履歴なし・記憶なしで最終テキストを返す */
 function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf<'agent'> {
   const node = createNode('agent', id, { x: 0, y: 0 });
   node.config = { ...node.config, name: id, maxSteps: 5, ...config };
@@ -461,6 +543,13 @@ function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf
 function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
   return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', description: '', model: '', questions } };
 }
+
+/** ワークフォルダの中のフォルダ path を表す files ノード */
+function folderOf(id: string, path: string, files: { path: string; content: string }[]): NodeOf<'files'> {
+  return { id, kind: 'files', position: { x: 0, y: 0 }, config: { path, description: '', files } };
+}
+
+const fileToolNames = ['workfolder_delete', 'workfolder_edit_markdown', 'workfolder_list', 'workfolder_patch_json', 'workfolder_read', 'workfolder_write'];
 
 function workfolderGraphOf(permission: AccessPermission): GraphDefinition {
   const graph = graphWithMain();

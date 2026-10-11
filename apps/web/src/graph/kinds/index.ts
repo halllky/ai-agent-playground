@@ -16,13 +16,19 @@ export type NodeKindView<K extends NodeKind> = {
   label: string;
   /** ノード本体に出す要約 */
   summary(node: NodeOf<K>): string;
-  Inspector(props: { node: NodeOf<K>; onChange: (node: NodeOf<K>) => void }): ReactNode;
+  /** graph は node を含む、表示中のグラフ */
+  Inspector(props: { node: NodeOf<K>; graph: GraphDefinition; onChange: (node: NodeOf<K>) => void }): ReactNode;
 };
+
+/** エッジの両端のノード。見つからなければ undefined */
+export type EdgeEnds = { source: GraphNode | undefined; target: GraphNode | undefined };
 
 /** エッジ種別ごとの画面上の振る舞い */
 export type EdgeKindView<K extends EdgeKind> = {
   /** キャンバス上のエッジに添える説明。空文字なら何も出さない */
-  label(edge: EdgeOf<K>, target: GraphNode | undefined): string;
+  label(edge: EdgeOf<K>, ends: EdgeEnds): string;
+  /** 中身は何も伝えず、実行の順序だけを決めるエッジか。キャンバスでは破線で描く */
+  orderOnly(edge: EdgeOf<K>, ends: EdgeEnds): boolean;
   Inspector(props: { edge: EdgeOf<K>; source: GraphNode | undefined; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
 };
 
@@ -45,9 +51,16 @@ export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {
   return nodeKindViews[node.kind] as NodeKindView<NodeKind>;
 }
 
-/** ノードの表示名 */
+/** ノードの表示名。フォルダはワークフォルダでのパス */
 export function nodeName(node: GraphNode): string {
-  return node.kind === 'user' ? 'ユーザー' : node.config.name;
+  switch (node.kind) {
+    case 'user':
+      return 'ユーザー';
+    case 'files':
+      return node.config.path ? `${node.config.path}/` : 'ワークフォルダ全体';
+    default:
+      return node.config.name;
+  }
 }
 
 /** グラフ上のノードの表示名。ノードが見つからなければ id をそのまま返す */

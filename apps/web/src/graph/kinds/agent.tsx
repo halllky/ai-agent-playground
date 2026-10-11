@@ -1,44 +1,155 @@
-import { defaultModelOf, memoryModes, modelProviderLabels, modelProviders, passModes, returnModes, type NodeOf } from 'protocol';
-import { Hint, ModelField, NumberField, SectionHeading, SelectField, TextField } from '../fields.tsx';
-import type { NodeKindView } from './index.ts';
+import { useId } from 'react';
+import {
+  defaultModelOf,
+  historyModes,
+  memoryModes,
+  modelProviderLabels,
+  modelProviders,
+  pathInFolder,
+  returnModes,
+  type GraphDefinition,
+  type GraphEdge,
+  type NodeOf,
+} from 'protocol';
+import { ModelField, NumberField, SectionHeading, SelectField, TextField } from '../fields.tsx';
+import { nodeName, type NodeKindView } from './index.ts';
+
+type AgentConfig = NodeOf<'agent'>['config'];
 
 /** エージェントノードの画面上の振る舞い */
 export const agentView: NodeKindView<'agent'> = {
   label: 'エージェント',
   summary: (node) => `${modelProviderLabels[node.config.provider]} · ${node.config.model}`,
-  Inspector: ({ node, onChange }) => {
-    const set = (config: Partial<NodeOf<'agent'>['config']>) => onChange({ ...node, config: { ...node.config, ...config } });
+  Inspector: ({ node, graph, onChange }) => {
+    const { config } = node;
+    const set = (changed: Partial<AgentConfig>) => onChange({ ...node, config: { ...config, ...changed } });
     return (
       <>
-        <TextField label="名前（ツール名）" value={node.config.name} onChange={(name) => set({ name })} />
-        <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
+        <TextField label="名前（ツール名）" value={config.name} onChange={(name) => set({ name })} />
+        <TextField label="ツールの説明（呼び出し元に見える）" value={config.description} onChange={(description) => set({ description })} />
         <SelectField
           label="プロバイダ"
-          value={node.config.provider}
+          value={config.provider}
           options={providerOptions}
           // モデル ID はプロバイダごとに別物なので、切り替えたら既定のモデルに戻す
           onChange={(provider) => set({ provider, model: defaultModelOf[provider] })}
         />
-        <ModelField provider={node.config.provider} value={node.config.model} onChange={(model) => set({ model })} />
-        <TextField label="システムプロンプト" multiline value={node.config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt })} />
-        <NumberField label="最大ステップ数" min={1} value={node.config.maxSteps} onChange={(maxSteps) => set({ maxSteps })} />
-        <SectionHeading>呼び出され方</SectionHeading>
-        <Hint>
-          フローから呼ばれたときは、流れてきた入力が依頼、この会話の発言と返答が呼び出し元の会話になります。
-          ユーザーとの会話を覚えて続けるなら、記憶を「セッションで継続」にします。
-        </Hint>
-        <SelectField label="渡すもの" value={node.config.pass} options={passOptions} onChange={(pass) => set({ pass })} />
-        <SelectField label="返すもの" value={node.config.returns} options={returnOptions} onChange={(returns) => set({ returns })} />
-        <SelectField label="記憶" value={node.config.memory} options={memoryOptions} onChange={(memory) => set({ memory })} />
+        <ModelField provider={config.provider} value={config.model} onChange={(model) => set({ model })} />
+        <NumberField label="最大ステップ数" min={1} value={config.maxSteps} onChange={(maxSteps) => set({ maxSteps })} />
+
+        <SectionHeading>LLM への入力</SectionHeading>
+        <TextField label="① システムプロンプト" multiline value={config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt })} />
+        <SelectField label="② 前回までの依頼と応答" value={config.memory} options={memoryOptions} onChange={(memory) => set({ memory })} />
+        <div className="mb-2 text-xs text-muted">③ 今回のメッセージ</div>
+        <div className="mb-2 border-l-2 pl-2">
+          <ConversationField config={config} onChange={set} />
+          <AttachmentsField graph={graph} paths={config.attachments} onChange={(attachments) => set({ attachments })} />
+          <RequestSources graph={graph} agentId={node.id} />
+        </div>
+
+        <SectionHeading>呼び出し元へ返すもの</SectionHeading>
+        <SelectField label="" value={config.returns} options={returnOptions} onChange={(returns) => set({ returns })} />
       </>
     );
   },
 };
 
-const passLabels: Record<NodeOf<'agent'>['config']['pass'], string> = { task: '依頼のみ', taskWithHistory: '呼び出し元の会話も渡す', history: '呼び出し元の会話のみ' };
-const returnLabels: Record<NodeOf<'agent'>['config']['returns'], string> = { finalText: '最終テキスト', allSteps: '全ステップ' };
-const memoryLabels: Record<NodeOf<'agent'>['config']['memory'], string> = { fresh: '毎回まっさら', turn: 'ターン内で継続', session: 'セッションで継続' };
-const passOptions = passModes.map((value) => ({ value, label: passLabels[value] }));
-const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));
+/** ユーザーとの会話をどこまで入れるか。直近なら発言数をその横で選ぶ */
+function ConversationField(props: { config: AgentConfig; onChange: (changed: Partial<AgentConfig>) => void }) {
+  const { config, onChange } = props;
+  return (
+    <label className="mb-2 flex flex-col gap-0.5">
+      <span className="text-xs text-muted">ユーザーとの会話</span>
+      <span className="flex items-center gap-1">
+        <select className="min-w-0 flex-1" value={config.history} onChange={(e) => onChange({ history: e.target.value as AgentConfig['history'] })}>
+          {historyOptions.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {config.history === 'recent' && (
+          <>
+            <input
+              className="w-14"
+              type="number"
+              min={1}
+              value={config.historyLength}
+              onChange={(e) => {
+                const historyLength = Number(e.target.value);
+                if (Number.isInteger(historyLength) && historyLength >= 1) onChange({ historyLength });
+              }}
+            />
+            発言
+          </>
+        )}
+      </span>
+    </label>
+  );
+}
+
+/** 依頼がどこから来るか。このエージェントへ流れてくるノードと、このエージェントをツールとして使うエージェントを名前で示す */
+function RequestSources({ graph, agentId }: { graph: GraphDefinition; agentId: string }) {
+  const namesOf = (kind: GraphEdge['kind']) =>
+    graph.edges
+      .filter((e) => e.kind === kind && e.target === agentId)
+      .flatMap((e) => graph.nodes.filter((n) => n.id === e.source))
+      .map(nodeName)
+      .join('、');
+  const flowing = namesOf('flow');
+  const callers = namesOf('tool');
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted">依頼</span>
+      {flowing && <span>{flowing} から流れてくるもの</span>}
+      {callers && <span>{callers} が呼び出すときに書く指示</span>}
+      {!flowing && !callers && <span className="text-muted">どこからもつながっていません</span>}
+    </div>
+  );
+}
+
+/** 今回のメッセージに中身を入れる、ワークフォルダのファイル。候補には、グラフのフォルダの初期ファイルを出す。パスの誤りはグラフの警告に出す */
+function AttachmentsField(props: { graph: GraphDefinition; paths: string[]; onChange: (paths: string[]) => void }) {
+  const { graph, paths, onChange } = props;
+  const listId = useId();
+  const suggestions = graph.nodes.flatMap((n) => (n.kind === 'files' ? n.config.files.map((f) => pathInFolder(n.config.path, f.path)) : []));
+  return (
+    <fieldset className="mb-2 flex flex-col gap-0.5">
+      <legend className="mb-0.5 text-xs text-muted">ワークフォルダのファイル（その時点の中身）</legend>
+      {paths.map((path, i) => (
+        <div key={i} className="flex gap-1">
+          <input
+            className="min-w-0 flex-1"
+            list={listId}
+            value={path}
+            placeholder="notes/概要.md"
+            onChange={(e) => onChange(paths.map((p, j) => (j === i ? e.target.value : p)))}
+          />
+          <button type="button" className="border-danger text-danger" onClick={() => onChange(paths.filter((_, j) => j !== i))}>
+            削除
+          </button>
+        </div>
+      ))}
+      <datalist id={listId}>
+        {[...new Set(suggestions)].map((path) => (
+          <option key={path} value={path} />
+        ))}
+      </datalist>
+      <button type="button" onClick={() => onChange([...paths, ''])}>
+        + ファイル
+      </button>
+    </fieldset>
+  );
+}
+
+const memoryLabels: Record<AgentConfig['memory'], string> = { fresh: '含めない', turn: 'このターンの分', session: 'このセッションの分' };
+const historyLabels: Record<AgentConfig['history'], string> = { none: '含めない', recent: '直近', all: 'すべて' };
+const returnLabels: Record<AgentConfig['returns'], string> = {
+  finalText: '最後の応答文',
+  allSteps: '全ステップ（JSON）',
+  none: 'なし（作業だけして終わる）',
+};
 const memoryOptions = memoryModes.map((value) => ({ value, label: memoryLabels[value] }));
+const historyOptions = historyModes.map((value) => ({ value, label: historyLabels[value] }));
+const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));
 const providerOptions = modelProviders.map((value) => ({ value, label: modelProviderLabels[value] }));

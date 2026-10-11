@@ -28,12 +28,12 @@ export type TurnRecord = {
 /** セッションと、その全分岐のターン */
 export type SessionDetail = SessionRecord & { turns: TurnRecord[] };
 
-/** files ノードの id ごとの、パスからファイルの中身へ */
-export type FilesByNode = Record<string, Record<string, string>>;
+/** ワークフォルダの中身。パスからファイルの中身へ */
+export type WorkfolderFiles = Record<string, string>;
 
-/** あるターンが終わった時点（実行中なら今）のファイル */
+/** あるターンが終わった時点（実行中なら今）のワークフォルダ */
 export type TurnFiles = {
-  files: FilesByNode;
-  /** 親ターンの時点から追加・変更・削除されたパスを、files ノードの id ごとに */
-  changed: Record<string, string[]>;
+  files: WorkfolderFiles;
+  /** 親ターンの時点から追加・変更・削除されたパス */
+  changed: string[];
 };

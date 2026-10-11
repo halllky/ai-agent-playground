@@ -1,25 +1,8 @@
-/** files ノード1つの中のファイル1つ */
-export type FileRef = { filesNodeId: string; path: string };
-
-/** files ノード1つのファイルを、パスの / で区切ったフォルダの木で表示する。changed のパスには印を付ける */
-export function FileTree(props: {
-  filesNodeId: string;
-  paths: string[];
-  changed: string[];
-  selected: FileRef | null;
-  onSelect: (file: FileRef) => void;
-}) {
-  const { filesNodeId, paths, changed, selected, onSelect } = props;
+/** ワークフォルダのファイルを、パスの / で区切ったフォルダの木で表示する。changed のパスには印を付ける */
+export function FileTree(props: { paths: string[]; changed: string[]; selectedPath: string | null; onSelect: (path: string) => void }) {
+  const { paths, changed, selectedPath, onSelect } = props;
   const changedPaths = new Set(changed);
-  const selectedPath = selected?.filesNodeId === filesNodeId ? selected.path : null;
-  return (
-    <Folder
-      nodes={treeOf(paths)}
-      isChanged={(path) => changedPaths.has(path)}
-      selectedPath={selectedPath}
-      onSelect={(path) => onSelect({ filesNodeId, path })}
-    />
-  );
+  return <Folder nodes={treeOf(paths)} isChanged={(path) => changedPaths.has(path)} selectedPath={selectedPath} onSelect={onSelect} />;
 }
 
 /** パスを / で区切った木の1要素。ファイルなら path を、フォルダなら children を持つ */

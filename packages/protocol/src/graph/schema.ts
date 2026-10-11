@@ -1,15 +1,15 @@
 import { z } from 'zod';
 import { modelProviders } from '../model.ts';
 
-/** エージェントに何を渡すか。history なら呼び出し元は指示を書かず、呼び出し元の会話だけを渡す */
-export const passModes = ['task', 'taskWithHistory', 'history'] as const;
-/** エージェントから何を返すか */
-export const returnModes = ['finalText', 'allSteps'] as const;
-/** エージェントの記憶をどこまで持ち越すか */
+/** エージェントの今回のメッセージに、ユーザーとの会話をどこまで入れるか。recent なら直近 historyLength 発言 */
+export const historyModes = ['none', 'recent', 'all'] as const;
+/** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる */
+export const returnModes = ['finalText', 'allSteps', 'none'] as const;
+/** エージェント自身の過去の呼び出し（依頼と応答）をどこまで持ち越すか */
 export const memoryModes = ['fresh', 'turn', 'session'] as const;
-/** ファイル群へのアクセス権限。write は read を含む */
+/** フォルダへのアクセス権限。write は read を含む */
 export const accessPermissions = ['read', 'write'] as const;
-/** ファイル群へのアクセス権限 */
+/** フォルダへのアクセス権限 */
 export type AccessPermission = (typeof accessPermissions)[number];
 /** Web検索の深さ。advanced は精度が上がるがクレジットを多く使う */
 export const searchDepths = ['basic', 'advanced'] as const;
@@ -59,7 +59,7 @@ export type FlowCondition = z.infer<typeof flowConditionSchema>;
 
 /**
  * グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない。
- * user 以外のノードの config.name は、呼び出し元から見えるツール名（files ノードではツール名の接頭辞）になる
+ * user と files 以外のノードの config.name は、呼び出し元から見えるツール名になる
  */
 export const graphNodeSchema = z.discriminatedUnion('kind', [
   /** ユーザー。ターンの発言はここから流れ出し、ここへ流れ込んだものが返答になる。グラフに1つだけ置く */
@@ -68,7 +68,11 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     kind: z.literal('user'),
     position: positionSchema,
   }),
-  /** LLM を呼び出して動くエージェント */
+  /**
+   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・記憶・今回のメッセージの順に渡す。
+   * 今回のメッセージは、ユーザーとの会話（history）・添付ファイル（attachments）・依頼をこの順に並べたもの。
+   * 依頼は、フローから呼ばれたときは流れてきた入力、ツールとして呼ばれたときは呼び出し元が書いた引数
+   */
   z.object({
     id: z.string(),
     kind: z.literal('agent'),
@@ -81,20 +85,31 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
       model: z.string(),
       systemPrompt: z.string(),
       maxSteps: z.number().int().positive(),
-      pass: z.enum(passModes),
-      returns: z.enum(returnModes),
+      history: z.enum(historyModes),
+      /** history が recent のときに入れる、直近の発言の数 */
+      historyLength: z.number().int().positive(),
+      /** 呼び出しのたびに今の中身を入れる、ワークフォルダのファイルのパス */
+      attachments: z.array(z.string()),
+      /** 記憶に残すのは依頼と、それへの応答（ツールコールを含む）だけで、会話や添付ファイルは残さない */
       memory: z.enum(memoryModes),
+      returns: z.enum(returnModes),
     }),
   }),
-  /** エージェントが Markdown / JSON ファイルを置く場所。会話で初めて使うときに files を写し、以降の中身はターンごとに残る */
+  /**
+   * ワークフォルダの中のフォルダ。ワークフォルダはセッションに1つで、Markdown / JSON ファイルを置く。
+   * エージェントからのツールエッジで、このフォルダ以下への権限を与える。
+   * 会話で初めて使うときに files を写し（すでに同じパスのファイルがあれば写さない）、以降の中身はターンごとに残る
+   */
   z.object({
     id: z.string(),
     kind: z.literal('files'),
     position: positionSchema,
     config: z.object({
-      name: z.string(),
-      /** エージェントに見せるファイル群の説明 */
+      /** ワークフォルダの中のフォルダのパス。空ならワークフォルダ全体 */
+      path: z.string(),
+      /** エージェントに見せるフォルダの説明 */
       description: z.string(),
+      /** 初期ファイル。path はこのフォルダからの相対パス */
       files: z.array(z.object({ path: z.string(), content: z.string() })),
     }),
   }),
@@ -137,7 +152,7 @@ export type InvocableNode = NodeOf<'agent'> | NodeOf<'judge'> | NodeOf<'webSearc
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [
-  /** 送り元のエージェントが、送り先をツールとして使う。permission は送り先が files ノードのときだけ意味を持つ */
+  /** 送り元のエージェントが、送り先をツールとして使う。permission は送り先が files ノードのときだけ意味を持ち、そのフォルダ以下への権限になる */
   z.object({
     id: z.string(),
     kind: z.literal('tool'),

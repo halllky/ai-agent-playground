@@ -2,20 +2,28 @@ import { accessPermissions, judgeAnswerOptions, type AccessPermission, type Flow
 import { ChecklistField, Hint, SelectField } from '../fields.tsx';
 import type { EdgeKindView } from './index.ts';
 
-/** ツールエッジの画面上の振る舞い。権限は送り先が files ノードのときだけ表示・編集する */
+/** ツールエッジの画面上の振る舞い。権限は送り先がフォルダのときだけ表示・編集する */
 export const toolEdgeView: EdgeKindView<'tool'> = {
-  label: (edge, target) => (target?.kind === 'files' ? permissionLabels[edge.permission] : ''),
+  label: (edge, { target }) => (target?.kind === 'files' ? permissionLabels[edge.permission] : ''),
+  orderOnly: () => false,
   Inspector: ({ edge, target, onChange }) =>
     target?.kind === 'files' ? (
-      <SelectField label="権限" value={edge.permission} options={permissionOptions} onChange={(permission) => onChange({ ...edge, permission })} />
+      <SelectField
+        label="このフォルダ以下への権限"
+        value={edge.permission}
+        options={permissionOptions}
+        onChange={(permission) => onChange({ ...edge, permission })}
+      />
     ) : (
       <Hint>送り元のエージェントが、送り先をツールとして使えるようにします。呼び出され方は送り先のノードで決まります。</Hint>
     ),
 };
 
-/** フローエッジの画面上の振る舞い。条件は送り元が判定ノードのときだけ編集できる */
+/** フローエッジの画面上の振る舞い。条件は送り元が判定ノードのときだけ編集できる。何も返さないエージェントからは順序だけが伝わる */
 export const flowEdgeView: EdgeKindView<'flow'> = {
-  label: (edge) => (edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : ''),
+  label: (edge, ends) =>
+    flowEdgeView.orderOnly(edge, ends) ? '順序のみ' : edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : '',
+  orderOnly: (_, { source }) => source?.kind === 'agent' && source.config.returns === 'none',
   Inspector: ({ edge, source, onChange }) => (
     <>
       <Hint>

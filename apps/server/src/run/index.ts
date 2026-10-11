@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
 import { asc, eq, max } from 'drizzle-orm';
-import type { FilesByNode, GraphDefinition, RunEvent, RunEventBody, TurnFiles, TurnRecord } from 'protocol';
+import { pathInFolder, type GraphDefinition, type RunEvent, type RunEventBody, type TurnFiles, type TurnRecord, type WorkfolderFiles } from 'protocol';
 import { db, runEvents, turns, type TurnState } from '../db/index.ts';
 import { runFlow, type FlowOutcome } from './flow.ts';
 import { turnHeader, type CallHeader, type RunScope } from './invoke.ts';
-import { FileError, FileGroup } from './nodes/files.ts';
+import { FileError, Workfolder } from './nodes/files.ts';
 
 type RunListener = (event: RunEvent) => void;
 
@@ -55,8 +55,8 @@ export function followTurn(turnId: string, listener: RunListener): { live: boole
 }
 
 /**
- * ターン時点（実行中なら今）のファイルと、親ターンの時点から変わったパス。ターンが無ければ undefined。
- * このターンで初めて使われた files ノードでは、設定から写したファイルも変わったものに含まれる
+ * ターン時点（実行中なら今）のワークフォルダと、親ターンの時点から変わったパス。ターンが無ければ undefined。
+ * このターンで設定から写した初期ファイルも、変わったものに含まれる
  */
 export function turnFiles(turnId: string): TurnFiles | undefined {
   const turn = db.select({ parentTurnId: turns.parentTurnId, state: turns.state }).from(turns).where(eq(turns.id, turnId)).get();
@@ -90,6 +90,7 @@ class Run implements RunScope {
   readonly state: TurnState;
   readonly signal: AbortSignal;
   readonly turnMemory = new Map<string, ModelMessage[]>();
+  readonly conversation: ModelMessage[];
   private readonly controller = new AbortController();
   private readonly listeners = new Set<RunListener>();
   private seq = 0;
@@ -97,6 +98,7 @@ class Run implements RunScope {
   constructor(private readonly turn: typeof turns.$inferSelect) {
     this.graph = turn.graph;
     this.state = turn.state;
+    this.conversation = [...conversationBefore(turn.parentTurnId), { role: 'user', content: turn.userText }];
     this.signal = this.controller.signal;
   }
 
@@ -124,7 +126,7 @@ class Run implements RunScope {
     let outcome: FlowOutcome;
     try {
       this.seedFiles();
-      outcome = await runFlow(this, this.turn.userText, conversationBefore(this.turn.parentTurnId));
+      outcome = await runFlow(this, this.turn.userText);
     } catch (e) {
       outcome = { status: 'error', reply: '', error: e instanceof Error ? e.message : String(e) };
     }
@@ -132,39 +134,39 @@ class Run implements RunScope {
     this.emit(turnHeader, { type: 'turn.finish', ...outcome });
   }
 
-  /** files ノードの設定のファイルを、この会話でまだ使われていなければ写す。以降の編集はこの会話の中だけに効く */
+  /**
+   * files ノードの初期ファイルを、この会話でまだ写していなければワークフォルダに写す。以降の編集はこの会話の中だけに効く。
+   * 同じパスのファイルがすでにあれば、会話の中の中身を残して写さない
+   */
   private seedFiles(): void {
+    const workfolder = new Workfolder(this.state.files, () => {});
     for (const node of this.graph.nodes) {
-      if (node.kind !== 'files' || node.id in this.state.files) continue;
-      const group = new FileGroup((this.state.files[node.id] = {}), () => this.saveState());
+      if (node.kind !== 'files' || this.state.seededFolders.includes(node.id)) continue;
+      this.state.seededFolders.push(node.id);
       for (const file of node.config.files) {
+        const path = pathInFolder(node.config.path, file.path);
+        if (workfolder.has(path)) continue;
         try {
-          group.write(file.path, file.content);
+          workfolder.write(path, file.content);
         } catch (e) {
           if (!(e instanceof FileError)) throw e;
-          this.emit(turnHeader, { type: 'log', level: 'warn', message: `${node.config.name} の ${file.path} を写せませんでした: ${e.message}` });
+          this.emit(turnHeader, { type: 'log', level: 'warn', message: `初期ファイル ${path} を写せませんでした: ${e.message}` });
         }
       }
     }
+    this.saveState();
   }
 }
 
 /** parentTurnId のターンが終わった時点の状態の写し。会話の先頭なら空 */
 function stateAfter(parentTurnId: string | null): TurnState {
   const parent = parentTurnId ? db.select({ state: turns.state }).from(turns).where(eq(turns.id, parentTurnId)).get() : undefined;
-  return parent?.state ?? { files: {}, memories: {} };
+  return parent?.state ?? { files: {}, seededFolders: [], memories: {} };
 }
 
-/** before から after までに追加・変更・削除されたパス。files ノードの id ごとに、変わったものがあるノードだけ */
-function changedPaths(before: FilesByNode, after: FilesByNode): TurnFiles['changed'] {
-  const changed: TurnFiles['changed'] = {};
-  for (const nodeId of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const old = before[nodeId] ?? {};
-    const now = after[nodeId] ?? {};
-    const paths = [...new Set([...Object.keys(old), ...Object.keys(now)])].filter((path) => old[path] !== now[path]);
-    if (paths.length > 0) changed[nodeId] = paths.sort();
-  }
-  return changed;
+/** before から after までに追加・変更・削除されたパス */
+function changedPaths(before: WorkfolderFiles, after: WorkfolderFiles): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((path) => before[path] !== after[path]).sort();
 }
 
 /** parentTurnId までの分岐をたどった、ユーザーの発言と返答の会話 */

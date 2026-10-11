@@ -58,13 +58,16 @@ export function Canvas(props: {
     }),
   );
   const edges = definition.edges.map((edge): Edge => {
+    const view = edgeKindView(edge);
+    const ends = { source: definition.nodes.find((n) => n.id === edge.source), target: definition.nodes.find((n) => n.id === edge.target) };
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
       sourceHandle: edge.kind,
       targetHandle: edge.kind,
-      label: edgeKindView(edge).label(edge, definition.nodes.find((n) => n.id === edge.target)) || undefined,
+      label: view.label(edge, ends) || undefined,
+      style: view.orderOnly(edge, ends) ? { strokeDasharray: '5 4' } : undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
       // React Flow が選択中などに付ける線の色より、警告の色を優先する
