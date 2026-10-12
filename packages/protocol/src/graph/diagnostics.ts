@@ -19,13 +19,15 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
   const graphWarning = (message: string) => warnings.push({ target: { graph: true }, message });
 
-  const users = graph.nodes.filter((n) => n.kind === 'user');
-  if (users.length !== 1) graphWarning(`ユーザーノードがちょうど1つ必要です（現在 ${users.length}）`);
+  const inputs = graph.nodes.filter((n) => n.kind === 'userInput');
+  const outputs = graph.nodes.filter((n) => n.kind === 'userOutput');
+  if (inputs.length !== 1) graphWarning(`ユーザー入力ノードがちょうど1つ必要です（現在 ${inputs.length}）`);
+  if (outputs.length !== 1) graphWarning(`ユーザー出力ノードがちょうど1つ必要です（現在 ${outputs.length}）`);
   const order = flowOrder(graph);
   if (order === null) graphWarning('フローが循環しているため実行できません');
-  else if (order.length === 0) graphWarning('ユーザーから何も流れていません');
-  if (!graph.edges.some((e) => e.kind === 'flow' && users.some((u) => u.id === e.target))) {
-    graphWarning('ユーザーへ何も流れ込まないため、返答が空になります');
+  else if (order.length === 0) graphWarning('ユーザー入力から何も流れていません');
+  if (!graph.edges.some((e) => e.kind === 'flow' && outputs.some((o) => o.id === e.target))) {
+    graphWarning('ユーザー出力へ何も流れ込まないため、返答が空になります');
   }
 
   warnings.push(...folderOverlapWarnings(graph));
@@ -60,7 +62,8 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
 /** ノード単体の設定の問題 */
 function configWarnings(node: GraphNode): string[] {
   switch (node.kind) {
-    case 'user':
+    case 'userInput':
+    case 'userOutput':
       return [];
     case 'agent':
       return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...agentConfigWarnings(node.config)];

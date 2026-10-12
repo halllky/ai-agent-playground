@@ -24,7 +24,7 @@ export function Inspector(props: {
         <InspectorHeader
           title={view.label}
           onDelete={
-            node.kind === 'user'
+            view.fixed
               ? undefined
               : () => {
                   updateGraph((d) => removeNodes(d, [node.id]));

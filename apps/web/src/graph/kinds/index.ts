@@ -4,7 +4,7 @@ import { agentView } from './agent.tsx';
 import { flowEdgeView, toolEdgeView } from './edges.tsx';
 import { filesView } from './files.tsx';
 import { judgeView } from './judge.tsx';
-import { userView } from './user.tsx';
+import { userInputView, userOutputView } from './user.tsx';
 import { webSearchView } from './webSearch.tsx';
 
 /**
@@ -14,6 +14,8 @@ import { webSearchView } from './webSearch.tsx';
 export type NodeKindView<K extends NodeKind> = {
   /** パレットやノード見出しに出す種別名 */
   label: string;
+  /** グラフに1つだけ置き、削除できないノードか。無いときだけパレットから追加できる */
+  fixed?: boolean;
   /** ノード本体に出す要約 */
   summary(node: NodeOf<K>): string;
   /** graph は node を含む、表示中のグラフ */
@@ -32,16 +34,17 @@ export type EdgeKindView<K extends EdgeKind> = {
 
 /** 全ノード種別の画面上の振る舞い。並びはパレットのボタンの並び */
 export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
-  user: userView,
+  userInput: userInputView,
+  userOutput: userOutputView,
   agent: agentView,
   files: filesView,
   webSearch: webSearchView,
   judge: judgeView,
 };
 
-/** graph にパレットから追加できるノード種別。ユーザーノードは無いときだけ */
+/** graph にパレットから追加できるノード種別。固定のノードは無いときだけ */
 export function addableNodeKinds(graph: GraphDefinition): NodeKind[] {
-  return (Object.keys(nodeKindViews) as NodeKind[]).filter((kind) => kind !== 'user' || !graph.nodes.some((n) => n.kind === 'user'));
+  return (Object.keys(nodeKindViews) as NodeKind[]).filter((kind) => !nodeKindViews[kind].fixed || !graph.nodes.some((n) => n.kind === kind));
 }
 
 /** node の種別の振る舞い */
@@ -52,7 +55,8 @@ export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {
 /** ノードの表示名。フォルダはワークフォルダでのパス */
 export function nodeName(node: GraphNode): string {
   switch (node.kind) {
-    case 'user':
+    case 'userInput':
+    case 'userOutput':
       return 'ユーザー';
     case 'files':
       return node.config.path ? `${node.config.path}/` : 'ワークフォルダ全体';

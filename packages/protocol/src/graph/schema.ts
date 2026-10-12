@@ -61,13 +61,19 @@ export type FlowCondition = z.infer<typeof flowConditionSchema>;
 
 /**
  * グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない。
- * user と files 以外のノードの config.name は、呼び出し元から見えるツール名になる
+ * 呼び出せるノードの config.name は、呼び出し元から見えるツール名になる
  */
 export const graphNodeSchema = z.discriminatedUnion('kind', [
-  /** ユーザー。ターンの発言はここから流れ出し、ここへ流れ込んだものが返答になる。グラフに1つだけ置く */
+  /** ユーザー入力。ターンの発言はここから流れ出す。グラフに1つだけ置く */
   z.object({
     id: z.string(),
-    kind: z.literal('user'),
+    kind: z.literal('userInput'),
+    position: positionSchema,
+  }),
+  /** ユーザー出力。ここへ流れ込んだものがターンの返答になる。グラフに1つだけ置く */
+  z.object({
+    id: z.string(),
+    kind: z.literal('userOutput'),
     position: positionSchema,
   }),
   /**
@@ -149,6 +155,11 @@ export type NodeKind = GraphNode['kind'];
 export type NodeOf<K extends NodeKind> = Extract<GraphNode, { kind: K }>;
 /** 入力を受け取って出力を返す、呼び出せるノード */
 export type InvocableNode = NodeOf<'agent'> | NodeOf<'judge'> | NodeOf<'webSearch'>;
+
+/** node が入力を受け取って出力を返す、呼び出せるノードか */
+export function isInvocable(node: GraphNode): node is InvocableNode {
+  return node.kind === 'agent' || node.kind === 'judge' || node.kind === 'webSearch';
+}
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [

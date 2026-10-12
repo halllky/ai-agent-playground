@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage, Tool, ToolSet } from 'ai';
-import type { GraphDefinition, InvocableNode, NodeOf, RunEventBody, RunEventHeader, RunStatus } from 'protocol';
+import { isInvocable, type GraphDefinition, type InvocableNode, type NodeOf, type RunEventBody, type RunEventHeader, type RunStatus } from 'protocol';
 import type { TurnState } from '../db/index.ts';
 import { agentTool, invokeAgent } from './nodes/agent.ts';
 import { Workfolder, workfolderTools, type FolderAccess } from './nodes/files.ts';
@@ -102,10 +102,9 @@ function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, callId: string | null
   for (const edge of scope.graph.edges) {
     if (edge.kind !== 'tool' || edge.source !== agent.id) continue;
     const target = scope.graph.nodes.find((n) => n.id === edge.target);
-    if (!target || target.kind === 'user') continue;
-    if (target.kind === 'files') {
+    if (target?.kind === 'files') {
       access.push({ folder: target.config.path, permission: edge.permission, description: target.config.description });
-    } else {
+    } else if (target && isInvocable(target)) {
       tools[target.config.name] = nodeTool(scope, target, callId, depth + 1);
     }
   }

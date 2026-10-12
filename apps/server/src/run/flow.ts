@@ -2,11 +2,11 @@ import { flowOrder, type EdgeOf, type GraphDefinition, type InvocableNode, type 
 import { invoke, turnHeader, type RunScope } from './invoke.ts';
 import { meetsCondition, type Verdict } from './nodes/judge.ts';
 
-/** ターン1回分の実行結果。reply はユーザーノードへ流れ込んだ返答 */
+/** ターン1回分の実行結果。reply はユーザー出力ノードへ流れ込んだ返答 */
 export type FlowOutcome = { status: Exclude<RunStatus, 'running'>; reply: string; error: string | null };
 
 /**
- * ユーザーの発言をユーザーノードから流し、流れの順にノードを1回ずつ呼び出して、ユーザーノードへ流れ込んだものを返答にする。
+ * ユーザーの発言をユーザー入力ノードから流し、流れの順にノードを1回ずつ呼び出して、ユーザー出力ノードへ流れ込んだものを返答にする。
  *
  * 各ノードの入力は流れてきた出力をつなげたもので、何も流れてこなかった（条件を満たさなかった・前段が飛ばされた）ノードは飛ばす。
  * 返すものが「なし」のエージェントは、受け取った入力をそのまま後段へ流す（前処理として直列に挟める）。
@@ -14,12 +14,12 @@ export type FlowOutcome = { status: Exclude<RunStatus, 'running'>; reply: string
  * 返答には、ユーザー自身の発言は含めない。
  */
 export async function runFlow(scope: RunScope, userText: string): Promise<FlowOutcome> {
-  const user = scope.graph.nodes.find((n) => n.kind === 'user');
+  const input = scope.graph.nodes.find((n) => n.kind === 'userInput');
   const order = flowOrder(scope.graph);
-  if (!user) return { status: 'error', reply: '', error: 'ユーザーノードがありません' };
+  if (!input) return { status: 'error', reply: '', error: 'ユーザー入力ノードがありません' };
   if (!order) return { status: 'error', reply: '', error: 'フローが循環しています' };
 
-  const outputs = new Map<string, Output>([[user.id, { node: user, pieces: [{ origin: user, text: userText }], verdict: null }]]);
+  const outputs = new Map<string, Output>([[input.id, { node: input, pieces: [{ origin: input, text: userText }], verdict: null }]]);
   let failed = false;
   for (const node of order) {
     if (scope.signal.aborted) break;
@@ -34,15 +34,16 @@ export async function runFlow(scope: RunScope, userText: string): Promise<FlowOu
     outputs.set(node.id, { node, pieces: passesThrough ? pieces : [{ origin: node, text: result.output ?? '' }], verdict: result.verdict });
   }
 
-  const reply = joined(piecesTo(scope.graph, user.id, outputs).filter((p) => p.origin.kind !== 'user'));
+  const output = scope.graph.nodes.find((n) => n.kind === 'userOutput');
+  const reply = output ? joined(piecesTo(scope.graph, output.id, outputs).filter((p) => p.origin.kind !== 'userInput')) : '';
   return { status: scope.signal.aborted ? 'aborted' : failed ? 'error' : 'done', reply, error: null };
 }
 
 /** 流れる中身の1つと、それを出力したノード。返すものが「なし」のエージェントを通っても出所は変わらない */
-type Piece = { origin: NodeOf<'user'> | InvocableNode; text: string };
+type Piece = { origin: NodeOf<'userInput'> | InvocableNode; text: string };
 
 /** 実行したノード1つの出力。verdict は判定ノードの回答（それ以外や失敗時は null） */
-type Output = { node: NodeOf<'user'> | InvocableNode; pieces: Piece[]; verdict: Verdict | null };
+type Output = { node: NodeOf<'userInput'> | InvocableNode; pieces: Piece[]; verdict: Verdict | null };
 
 /** nodeId へ流れてくる中身。送り元が判定ノードのフローは、条件を満たすものだけ流れる。同じ出所のものは最初の1つだけ残す */
 function piecesTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, Output>): Piece[] {
@@ -65,7 +66,7 @@ function piecesTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, O
  */
 function joined(pieces: Piece[]): string {
   if (pieces.length <= 1) return pieces[0]?.text ?? '';
-  const message = pieces.find((p) => p.origin.kind === 'user');
+  const message = pieces.find((p) => p.origin.kind === 'userInput');
   const others = pieces.filter((p) => p !== message).map(sectionOf).join('\n\n');
   if (!message) return others;
   return [
@@ -80,6 +81,6 @@ function joined(pieces: Piece[]): string {
 }
 
 function sectionOf({ origin, text }: Piece): string {
-  const name = origin.kind === 'user' ? 'user' : origin.config.name;
+  const name = origin.kind === 'userInput' ? 'user' : origin.config.name;
   return `<${name}>\n${text}\n</${name}>`;
 }

@@ -38,7 +38,7 @@ export type RunEventBody =
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
   /** output は呼び出し元へ返す、またはフローで後段へ流すテキスト */
   | { type: 'call.finish'; status: RunStatus; output: string; error: string | null }
-  /** reply はユーザーノードへ流れ込んだ返答 */
+  /** reply はユーザー出力ノードへ流れ込んだ返答 */
   | { type: 'turn.finish'; status: RunStatus; reply: string; error: string | null };
 
 export type RunEventType = RunEventBody['type'];

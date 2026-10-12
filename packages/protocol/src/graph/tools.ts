@@ -1,4 +1,4 @@
-import type { AccessPermission, GraphDefinition, NodeOf } from './schema.ts';
+import { isInvocable, type AccessPermission, type GraphDefinition, type NodeOf } from './schema.ts';
 
 /** ツール名として各プロバイダが受け付ける文字種 */
 export const toolNamePattern = /^[A-Za-z0-9_-]{1,64}$/;
@@ -60,10 +60,9 @@ export function agentToolNames(graph: GraphDefinition, agent: NodeOf<'agent'>): 
   for (const edge of graph.edges) {
     if (edge.kind !== 'tool' || edge.source !== agent.id) continue;
     const target = graph.nodes.find((n) => n.id === edge.target);
-    if (!target || target.kind === 'user') continue;
-    if (target.kind === 'files') {
+    if (target?.kind === 'files') {
       if (folderPermission !== 'write') folderPermission = edge.permission;
-    } else {
+    } else if (target && isInvocable(target)) {
       names.push(target.config.name);
     }
   }

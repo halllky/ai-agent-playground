@@ -20,7 +20,7 @@ export type TurnRecord = {
   /** 実行時に使ったグラフ。後でセッションのグラフを編集しても変わらない */
   graph: GraphDefinition;
   status: RunStatus;
-  /** ユーザーノードへ流れ込んだ返答。実行中は空 */
+  /** ユーザー出力ノードへ流れ込んだ返答。実行中は空 */
   reply: string;
   createdAt: number;
 };

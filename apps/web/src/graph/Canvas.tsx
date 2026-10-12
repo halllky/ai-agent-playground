@@ -52,7 +52,7 @@ export function Canvas(props: {
       type: 'graphNode',
       position: node.position,
       measured: measured[node.id],
-      deletable: node.kind !== 'user',
+      deletable: !nodeKindView(node).fixed,
       selected: selection !== null && 'nodeId' in selection && selection.nodeId === node.id,
       data: { node, warnings: warningsOf({ nodeId: node.id }) },
     }),
@@ -185,12 +185,12 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
   const roles = nodeRoles[data.node.kind];
   return (
     <div
-      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${data.node.kind === 'user' ? 'border-2' : 'border'} ${
+      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${view.fixed ? 'border-2' : 'border'} ${
         selected ? 'border-accent ring-1 ring-accent' : ''
       }`}
     >
       {roles.isTool && <Handle id="tool" type="target" position={Position.Top} />}
-      {roles.inFlow && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
+      {roles.receivesFlow && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
       <div className="text-2xs text-muted">{view.label}</div>
       <div className="font-semibold">{nodeName(data.node)}</div>
       <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>
@@ -200,7 +200,7 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
         </div>
       )}
       {roles.usesTools && <Handle id="tool" type="source" position={Position.Bottom} />}
-      {roles.inFlow && <Handle id="flow" type="source" position={Position.Right} className={flowHandle} />}
+      {roles.sendsFlow && <Handle id="flow" type="source" position={Position.Right} className={flowHandle} />}
     </div>
   );
 }

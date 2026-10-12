@@ -441,7 +441,7 @@ describe('ターン実行', () => {
     });
     const graph = graphWithMain();
     graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }), folderOf('notes', 'notes', []));
-    graph.edges = [flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'user'), toolEdge('secretary', 'notes', 'write')];
+    graph.edges = [flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'output'), toolEdge('secretary', 'notes', 'write')];
 
     const events = await runTurn(graph, 'こんにちは');
 
@@ -460,7 +460,7 @@ describe('ターン実行', () => {
     scripts.set('sub', () => streamOf(toolCallParts([{ name: 'finish', input: {} }])));
     const graph = graphWithMain();
     graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }));
-    graph.edges.push(flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('secretary', 'user'));
+    graph.edges.push(flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('secretary', 'output'));
 
     const events = await runTurn(graph, 'こんにちは');
 
@@ -484,7 +484,7 @@ describe('ターン実行', () => {
     const flowGraphOf = (anyOf: string[]) => {
       const graph = graphWithMain();
       graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), agentOf('researcher', { model: 'sub' }));
-      graph.edges.push(flowEdge('user', 'triage'), flowEdge('triage', 'researcher', { questionKey: 'urgent', anyOf }), flowEdge('researcher', 'main'));
+      graph.edges.push(flowEdge('input', 'triage'), flowEdge('triage', 'researcher', { questionKey: 'urgent', anyOf }), flowEdge('researcher', 'main'));
       return graph;
     };
     judgeRequests.length = 0;
@@ -518,17 +518,18 @@ describe('ターン実行', () => {
     scripts.set('calm', () => streamOf(textParts('順に対応します')));
     const graph: GraphDefinition = {
       nodes: [
-        createNode('user', 'user', { x: 0, y: 0 }),
+        createNode('userInput', 'input', { x: 0, y: 0 }),
+        createNode('userOutput', 'output', { x: 0, y: 0 }),
         judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]),
         agentOf('urgentAgent', { model: 'urgent' }),
         agentOf('calmAgent', { model: 'calm' }),
       ],
       edges: [
-        flowEdge('user', 'triage'),
+        flowEdge('input', 'triage'),
         flowEdge('triage', 'urgentAgent', { questionKey: 'urgent', anyOf: ['yes'] }),
         flowEdge('triage', 'calmAgent', { questionKey: 'urgent', anyOf: ['no'] }),
-        flowEdge('urgentAgent', 'user'),
-        flowEdge('calmAgent', 'user'),
+        flowEdge('urgentAgent', 'output'),
+        flowEdge('calmAgent', 'output'),
       ],
       settings: { maxCallDepth: 5 },
     };
@@ -555,8 +556,12 @@ describe('ターン実行', () => {
 /** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ */
 function graphWithMain(): GraphDefinition {
   return {
-    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agentOf('main', { model: 'main', history: 'sessionCalls' })],
-    edges: [flowEdge('user', 'main'), flowEdge('main', 'user')],
+    nodes: [
+      createNode('userInput', 'input', { x: 0, y: 0 }),
+      agentOf('main', { model: 'main', history: 'sessionCalls' }),
+      createNode('userOutput', 'output', { x: 0, y: 0 }),
+    ],
+    edges: [flowEdge('input', 'main'), flowEdge('main', 'output')],
     settings: { maxCallDepth: 5 },
   };
 }

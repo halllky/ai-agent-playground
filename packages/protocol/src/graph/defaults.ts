@@ -1,13 +1,13 @@
 import { defaultModelOf } from '../model.ts';
 import type { EdgeKind, EdgeOf, GraphDefinition, GraphNode, NodeKind, NodeOf } from './schema.ts';
 
-/** 新規セッションのグラフ。ユーザーの発言をエージェント1つが受けて返す */
+/** 新規セッションのグラフ。ユーザーの発言をエージェント1つが受けて返す。フローが左から右へ流れるように並べる */
 export function createDefaultGraph(): GraphDefinition {
-  const agent = createNode('agent', 'assistant', { x: 0, y: 150 });
+  const agent = createNode('agent', 'assistant', { x: 300, y: 0 });
   agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', history: 'sessionCalls' };
   return {
-    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agent],
-    edges: [createEdge('flow', 'user-assistant', 'user', 'assistant'), createEdge('flow', 'assistant-user', 'assistant', 'user')],
+    nodes: [createNode('userInput', 'input', { x: 0, y: 0 }), agent, createNode('userOutput', 'output', { x: 600, y: 0 })],
+    edges: [createEdge('flow', 'input-assistant', 'input', 'assistant'), createEdge('flow', 'assistant-output', 'assistant', 'output')],
     settings: { maxCallDepth: 5 },
   };
 }
@@ -23,7 +23,8 @@ export function createEdge<K extends EdgeKind>(kind: K, id: string, source: stri
 }
 
 const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['position']) => NodeOf<K> } = {
-  user: (id, position) => ({ id, kind: 'user', position }),
+  userInput: (id, position) => ({ id, kind: 'userInput', position }),
+  userOutput: (id, position) => ({ id, kind: 'userOutput', position }),
   agent: (id, position) => ({
     id,
     kind: 'agent',
