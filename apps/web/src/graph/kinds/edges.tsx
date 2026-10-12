@@ -1,21 +1,25 @@
-import { accessPermissions, judgeAnswerOptions, type AccessPermission, type FlowCondition, type NodeOf } from 'protocol';
+import { accessPermissions, judgeAnswerOptions, scopeLabel, scopeOf, type AccessPermission, type FlowCondition, type NodeOf } from 'protocol';
 import { ChecklistField, Hint, SelectField } from '../fields.tsx';
 import type { EdgeKindView } from './index.ts';
 
-/** ツールエッジの画面上の振る舞い。権限は送り先がフォルダのときだけ表示・編集する */
+/** ツールエッジの画面上の振る舞い */
 export const toolEdgeView: EdgeKindView<'tool'> = {
-  label: (edge, { target }) => (target?.kind === 'files' ? permissionLabels[edge.permission] : ''),
-  Inspector: ({ edge, target, onChange }) =>
-    target?.kind === 'files' ? (
-      <SelectField
-        label="このフォルダ以下への権限"
-        value={edge.permission}
-        options={permissionOptions}
-        onChange={(permission) => onChange({ ...edge, permission })}
-      />
-    ) : (
-      <Hint>送り元のエージェントが、送り先をツールとして使えるようにします。呼び出され方は送り先のノードで決まります。</Hint>
-    ),
+  label: () => '',
+  Inspector: () => <Hint>送り元のエージェントが、送り先をツールとして使えるようにします。呼び出され方は送り先のノードで決まります。</Hint>,
+};
+
+/** アクセスエッジの画面上の振る舞い。権限を与える範囲はキャンバスでつないだ行で決まり、ここでは権限だけを変える */
+export const accessEdgeView: EdgeKindView<'access'> = {
+  label: (edge) => permissionLabels[edge.permission],
+  Inspector: ({ edge, target, onChange }) => {
+    const scope = target?.kind === 'workfolder' ? scopeOf(target, edge.entryId) : null;
+    return (
+      <>
+        <Hint>送り元のエージェントが、ワークフォルダの {scope ? scopeLabel(scope) : '（もう無いファイル・フォルダ）'} を操作できるようにします。</Hint>
+        <SelectField label="権限" value={edge.permission} options={permissionOptions} onChange={(permission) => onChange({ ...edge, permission })} />
+      </>
+    );
+  },
 };
 
 /** フローエッジの画面上の振る舞い。条件は送り元が判定ノードのときだけ編集できる。何も返さないエージェントからは、受け取った入力がそのまま流れる */

@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { removeEdges, removeNodes, type GraphDefinition, type GraphWarning } from 'protocol';
+import { removeEdges, removeNodes, replaceNode, type GraphDefinition, type GraphWarning } from 'protocol';
 import { updateGraph } from '../store.ts';
 import { Hint, NumberField } from './fields.tsx';
 import type { Selection } from './GraphPanel.tsx';
@@ -36,7 +36,7 @@ export function Inspector(props: {
         <view.Inspector
           node={node}
           graph={definition}
-          onChange={(changed) => updateGraph((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === changed.id ? changed : n)) }))}
+          onChange={(changed) => updateGraph((d) => replaceNode(d, changed))}
         />
       </fieldset>
     );

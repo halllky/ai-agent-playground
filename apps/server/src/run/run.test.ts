@@ -11,6 +11,7 @@ import {
   type JudgeQuestion,
   type ModelProvider,
   type NodeOf,
+  type WorkfolderEntry,
   type RunEvent,
   type RunEventOf,
 } from 'protocol';
@@ -220,7 +221,7 @@ describe('ターン実行', () => {
     expect(toolNames.sort()).toEqual(['workfolder_list', 'workfolder_read']);
   });
 
-  it('ファイルは会話で初めて使うときに設定から写され、編集は分岐ごとに残る', async () => {
+  it('ファイルは会話の先頭で初期エントリから写され、編集は分岐ごとに残る', async () => {
     scripts.set('main', (prompt) => {
       if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
       return streamOf(
@@ -230,13 +231,8 @@ describe('ターン実行', () => {
       );
     });
     const graph = graphWithMain();
-    graph.nodes.push({
-      id: 'inventory',
-      kind: 'files',
-      position: { x: 0, y: 0 },
-      config: { path: 'stock', description: '在庫', files: [{ path: 'items.json', content: '{"count":1}' }] },
-    });
-    graph.edges.push(toolEdge('main', 'inventory', 'write'));
+    workfolderOf(graph).config.entries = [folderEntry('stock', 'stock'), fileEntry('items', 'items.json', '{"count":1}', 'stock')];
+    graph.edges.push(accessEdge('main', 'stock', 'write'));
     const sessionId = createSession(graph);
 
     const edited = await runTurn(graph, '増やして', undefined, { sessionId, parentTurnId: null });
@@ -248,7 +244,22 @@ describe('ターン実行', () => {
     expect(turnFiles(readAfter[0].turnId)?.changed).toEqual([]);
     expect(JSON.parse(ofType(readAfter, 'tool.result')[0].output as string)).toEqual({ count: 2 });
     expect(JSON.parse(ofType(readElsewhere, 'tool.result')[0].output as string)).toEqual({ count: 1 });
-    expect(graph.nodes.find((n) => n.kind === 'files')?.config).toMatchObject({ files: [{ content: '{"count":1}' }] });
+    expect(workfolderOf(graph).config.entries[1]).toMatchObject({ content: '{"count":1}' });
+  });
+
+  it('会話の途中で足した初期エントリは、続くターンに写さない', async () => {
+    scripts.set('main', () => streamOf(textParts('ok')));
+    const graph = graphWithMain();
+    const sessionId = createSession(graph);
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+
+    const changed = graphWithMain();
+    workfolderOf(changed).config.entries = [fileEntry('memo', 'memo.md', 'メモ')];
+    const second = await runTurn(changed, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+    const restarted = await runTurn(changed, '別の一つ目', undefined, { sessionId, parentTurnId: null });
+
+    expect(turnFiles(second[0].turnId)?.files).toEqual({});
+    expect(turnFiles(restarted[0].turnId)?.files).toEqual({ 'memo.md': 'メモ' });
   });
 
   it('Web検索は API キーが無ければツールのエラーとして返す', async () => {
@@ -345,8 +356,13 @@ describe('ターン実行', () => {
           );
     });
     const graph = graphWithMain();
-    graph.nodes.push(folderOf('notes', 'notes', []), folderOf('drafts', 'drafts', []), folderOf('other', 'other', [{ path: 'c.md', content: 'z' }]));
-    graph.edges.push(toolEdge('main', 'notes', 'read'), toolEdge('main', 'drafts', 'write'));
+    workfolderOf(graph).config.entries = [
+      folderEntry('notes', 'notes'),
+      folderEntry('drafts', 'drafts'),
+      folderEntry('other', 'other'),
+      fileEntry('c', 'c.md', 'z', 'other'),
+    ];
+    graph.edges.push(accessEdge('main', 'notes', 'read'), accessEdge('main', 'drafts', 'write'));
 
     const events = await runTurn(graph, '書いて');
 
@@ -359,6 +375,39 @@ describe('ターン実行', () => {
     expect(turnFiles(events[0].turnId)?.files).toEqual({ 'drafts/b.md': 'y', 'other/c.md': 'z' });
   });
 
+  it('ファイルへの権限では、そのファイルだけを操作でき、説明は権限のある範囲の分だけ見せる', async () => {
+    let listDescription = '';
+    scripts.set('main', (prompt, options) => {
+      const list = options.tools?.find((t) => t.name === 'workfolder_list');
+      listDescription = list?.type === 'function' ? (list.description ?? '') : '';
+      return lastIsToolResult(prompt)
+        ? streamOf(textParts('ok'))
+        : streamOf(
+            toolCallParts([
+              { name: 'workfolder_write', input: { path: 'notes/a.md', content: '更新' } },
+              { name: 'workfolder_read', input: { path: 'notes/b.md' } },
+              { name: 'workfolder_list', input: {} },
+            ]),
+          );
+    });
+    const graph = graphWithMain();
+    workfolderOf(graph).config.entries = [
+      folderEntry('notes', 'notes'),
+      { ...fileEntry('a', 'a.md', 'a', 'notes'), description: '計画' },
+      { ...fileEntry('b', 'b.md', 'b', 'notes'), description: '秘密' },
+    ];
+    graph.edges.push(accessEdge('main', 'a', 'write'));
+
+    const events = await runTurn(graph, '書いて');
+
+    const results = ofType(events, 'tool.result');
+    expect(results[0]).toMatchObject({ isError: false });
+    expect(results[1]).toMatchObject({ isError: true, output: expect.stringContaining('参照できる範囲: notes/a.md') });
+    expect(results[2]).toMatchObject({ output: ['notes/a.md'] });
+    expect(listDescription).toContain('notes/a.md: 計画');
+    expect(listDescription).not.toContain('秘密');
+  });
+
   it('経緯がユーザーとの会話なら、前のターンまでの直近の発言を今回のメッセージの先頭に、添付ファイル・依頼と並べる', async () => {
     const prompts: string[][] = [];
     scripts.set('main', (prompt) => {
@@ -368,7 +417,7 @@ describe('ターン実行', () => {
     const graph = graphWithMain();
     const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
     main.config = { ...main.config, history: 'recentConversation', historyLength: 2, attachments: ['notes/概要.md', 'notes/無い.md'] };
-    graph.nodes.push(folderOf('notes', 'notes', [{ path: '概要.md', content: '# 概要' }]));
+    workfolderOf(graph).config.entries = [folderEntry('notes', 'notes'), fileEntry('summary', '概要.md', '# 概要', 'notes')];
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -394,7 +443,7 @@ describe('ターン実行', () => {
     const graph = graphWithMain();
     const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
     main.config = { ...main.config, history: 'sessionCalls', attachments: ['概要.md'] };
-    graph.nodes.push(folderOf('root', '', [{ path: '概要.md', content: '# 概要' }]));
+    workfolderOf(graph).config.entries = [fileEntry('summary', '概要.md', '# 概要')];
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -440,8 +489,9 @@ describe('ターン実行', () => {
       );
     });
     const graph = graphWithMain();
-    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }), folderOf('notes', 'notes', []));
-    graph.edges = [flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'output'), toolEdge('secretary', 'notes', 'write')];
+    workfolderOf(graph).config.entries = [folderEntry('notes', 'notes')];
+    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }));
+    graph.edges = [flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'output'), accessEdge('secretary', 'notes', 'write')];
 
     const events = await runTurn(graph, 'こんにちは');
 
@@ -553,13 +603,14 @@ describe('ターン実行', () => {
   });
 });
 
-/** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ */
+/** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ。空のワークフォルダ work を持つ */
 function graphWithMain(): GraphDefinition {
   return {
     nodes: [
       createNode('userInput', 'input', { x: 0, y: 0 }),
       agentOf('main', { model: 'main', history: 'sessionCalls' }),
       createNode('userOutput', 'output', { x: 0, y: 0 }),
+      createNode('workfolder', 'work', { x: 0, y: 0 }),
     ],
     edges: [flowEdge('input', 'main'), flowEdge('main', 'output')],
     settings: { maxCallDepth: 5 },
@@ -586,22 +637,33 @@ function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
   return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', description: '', model: '', questions } };
 }
 
-/** ワークフォルダの中のフォルダ path を表す files ノード */
-function folderOf(id: string, path: string, files: { path: string; content: string }[]): NodeOf<'files'> {
-  return { id, kind: 'files', position: { x: 0, y: 0 }, config: { path, description: '', files } };
+function workfolderOf(graph: GraphDefinition): NodeOf<'workfolder'> {
+  return graph.nodes.find((n) => n.kind === 'workfolder')!;
+}
+
+function folderEntry(id: string, name: string, parentId: string | null = null): WorkfolderEntry {
+  return { id, parentId, name, description: '', type: 'folder' };
+}
+
+function fileEntry(id: string, name: string, content: string, parentId: string | null = null): WorkfolderEntry {
+  return { id, parentId, name, description: '', type: 'file', content };
 }
 
 const fileToolNames = ['workfolder_delete', 'workfolder_edit_markdown', 'workfolder_list', 'workfolder_patch_json', 'workfolder_read', 'workfolder_write'];
 
 function workfolderGraphOf(permission: AccessPermission): GraphDefinition {
   const graph = graphWithMain();
-  graph.nodes.push(createNode('files', 'work', { x: 0, y: 0 }));
-  graph.edges.push(toolEdge('main', 'work', permission));
+  graph.edges.push(accessEdge('main', null, permission));
   return graph;
 }
 
-function toolEdge(source: string, target: string, permission: AccessPermission = 'read'): EdgeOf<'tool'> {
-  return { id: `${source}-${target}`, kind: 'tool', source, target, permission };
+function toolEdge(source: string, target: string): EdgeOf<'tool'> {
+  return { id: `${source}-${target}`, kind: 'tool', source, target };
+}
+
+/** source に、ワークフォルダ work の entryId（null なら全体）以下への権限を与える */
+function accessEdge(source: string, entryId: string | null, permission: AccessPermission): EdgeOf<'access'> {
+  return { id: `${source}-${entryId ?? 'work'}`, kind: 'access', source, target: 'work', entryId, permission };
 }
 
 function flowEdge(source: string, target: string, condition: FlowCondition | null = null): EdgeOf<'flow'> {

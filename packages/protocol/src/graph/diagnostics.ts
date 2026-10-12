@@ -1,7 +1,8 @@
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from '../model.ts';
 import { canConnect, flowOrder } from './connections.ts';
-import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion, type NodeOf } from './schema.ts';
-import { agentToolNames, filePathError, folderLabel, folderPathError, pathInFolder, toolNamePattern } from './tools.ts';
+import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion, type NodeOf, type WorkfolderEntry } from './schema.ts';
+import { agentToolNames, toolNamePattern } from './tools.ts';
+import { entryNameError, entryPath, filePathError, scopeOf } from './workfolder.ts';
 
 /** グラフ構成への警告1件。target はどの要素についての警告か */
 export type GraphWarning = {
@@ -21,8 +22,10 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
 
   const inputs = graph.nodes.filter((n) => n.kind === 'userInput');
   const outputs = graph.nodes.filter((n) => n.kind === 'userOutput');
+  const workfolders = graph.nodes.filter((n) => n.kind === 'workfolder');
   if (inputs.length !== 1) graphWarning(`ユーザー入力ノードがちょうど1つ必要です（現在 ${inputs.length}）`);
   if (outputs.length !== 1) graphWarning(`ユーザー出力ノードがちょうど1つ必要です（現在 ${outputs.length}）`);
+  if (workfolders.length !== 1) graphWarning(`ワークフォルダノードがちょうど1つ必要です（現在 ${workfolders.length}）`);
   const order = flowOrder(graph);
   if (order === null) graphWarning('フローが循環しているため実行できません');
   else if (order.length === 0) graphWarning('ユーザー入力から何も流れていません');
@@ -30,7 +33,6 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
     graphWarning('ユーザー出力へ何も流れ込まないため、返答が空になります');
   }
 
-  warnings.push(...folderOverlapWarnings(graph));
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
     if (node.kind !== 'agent') continue;
@@ -53,6 +55,8 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
       warnings.push({ target: { edgeId: edge.id }, message: 'このノード同士は接続できません' });
     } else if (edge.kind === 'flow') {
       warnings.push(...flowConditionWarnings(edge, source).map((message) => ({ target: { edgeId: edge.id }, message })));
+    } else if (edge.kind === 'access' && target.kind === 'workfolder' && !scopeOf(target, edge.entryId)) {
+      warnings.push({ target: { edgeId: edge.id }, message: '権限を与えるファイル・フォルダがワークフォルダにありません' });
     }
   }
 
@@ -71,16 +75,8 @@ function configWarnings(node: GraphNode): string[] {
       return toolNamePattern.test(node.config.name) ? [] : [toolNameMessage];
     case 'judge':
       return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...judgeQuestionWarnings(node.config.questions)];
-    case 'files': {
-      const folderError = folderPathError(node.config.path);
-      const messages = folderError ? [folderError] : [];
-      for (const file of node.config.files) {
-        const pathError = filePathError(file.path);
-        if (pathError) messages.push(pathError);
-        else if (file.path.endsWith('.json') && !isJson(file.content)) messages.push(`${file.path} が JSON として読めません`);
-      }
-      return messages;
-    }
+    case 'workfolder':
+      return entryWarnings(node.config.entries);
   }
 }
 
@@ -93,25 +89,24 @@ function agentConfigWarnings(config: NodeOf<'agent'>['config']): string[] {
   });
 }
 
-/** 同じパスのフォルダや、複数のフォルダが同じパスに写す初期ファイル */
-function folderOverlapWarnings(graph: GraphDefinition): GraphWarning[] {
-  const warnings: GraphWarning[] = [];
-  const folderOwners = new Map<string, string>();
-  const fileOwners = new Map<string, string>();
-  for (const node of graph.nodes) {
-    if (node.kind !== 'files') continue;
-    const folder = node.config.path;
-    if (folderOwners.has(folder)) warnings.push({ target: { nodeId: node.id }, message: `フォルダ ${folderLabel(folder)} のノードがほかにもあります` });
-    folderOwners.set(folder, node.id);
-    for (const file of node.config.files) {
-      const path = pathInFolder(folder, file.path);
-      if (fileOwners.has(path) && fileOwners.get(path) !== node.id) {
-        warnings.push({ target: { nodeId: node.id }, message: `会話の最初に置くファイル ${path} が、ほかのフォルダにもあります。先に置いたほうが残ります` });
-      }
-      fileOwners.set(path, node.id);
-    }
+/** ワークフォルダの初期エントリの、名前・置き場所・中身の問題 */
+function entryWarnings(entries: WorkfolderEntry[]): string[] {
+  const messages: string[] = [];
+  const folderIds = new Set(entries.filter((e) => e.type === 'folder').map((e) => e.id));
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    const path = entryPath(entries, entry);
+    const nameError = entryNameError(entry.name);
+    if (nameError) messages.push(nameError);
+    if (entry.parentId !== null && !folderIds.has(entry.parentId)) messages.push(`${path} の親のフォルダがありません`);
+    if (paths.has(path)) messages.push(`${path} がほかにもあります`);
+    paths.add(path);
+    if (entry.type !== 'file' || nameError) continue;
+    const pathError = filePathError(path);
+    if (pathError) messages.push(pathError);
+    else if (path.endsWith('.json') && !isJson(entry.content)) messages.push(`${path} が JSON として読めません`);
   }
-  return warnings;
+  return messages;
 }
 
 function judgeQuestionWarnings(questions: JudgeQuestion[]): string[] {

@@ -23,6 +23,7 @@ import {
   removeNodes,
   type EdgeKind,
   type GraphDefinition,
+  type GraphEdge,
   type GraphNode,
   type GraphWarning,
   type NodeKind,
@@ -30,6 +31,7 @@ import {
 import { updateGraph } from '../store.ts';
 import type { Selection } from './GraphPanel.tsx';
 import { addableNodeKinds, edgeKindView, nodeKindView, nodeKindViews, nodeName } from './kinds/index.ts';
+import { accessHandleId, entryIdOfHandle } from './kinds/workfolder.tsx';
 
 /** グラフのノード・エッジを描き、追加・接続・移動・削除を受け付けるキャンバス */
 export function Canvas(props: {
@@ -64,8 +66,7 @@ export function Canvas(props: {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      sourceHandle: edge.kind,
-      targetHandle: edge.kind,
+      ...handlesOf(edge),
       label: view.label(edge, ends) || undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
@@ -124,12 +125,11 @@ export function Canvas(props: {
           const removed = changes.flatMap((c) => (c.type === 'remove' ? [c.id] : []));
           if (removed.length > 0) updateGraph((d) => removeEdges(d, removed));
         }}
-        isValidConnection={(connection) => connectionKind(definition, connection) !== undefined}
+        isValidConnection={(connection) => connectionEdge(definition, connection) !== undefined}
         onConnect={(connection) => {
           updateGraph((d) => {
-            const kind = connectionKind(d, connection);
-            if (!kind) return d;
-            return { ...d, edges: [...d.edges, createEdge(kind, crypto.randomUUID(), connection.source, connection.target)] };
+            const edge = connectionEdge(d, connection);
+            return edge ? { ...d, edges: [...d.edges, edge] } : d;
           });
         }}
       >
@@ -154,17 +154,35 @@ const nodeTypes = { graphNode: GraphNodeView };
 const deleteKeys = ['Delete', 'Backspace'];
 
 /**
- * 接続口どうしをつないだときにできるエッジの種類。つなげない、または同じ種類のエッジが既にあれば undefined。
- * 接続口の id はエッジの種類で、種類の違う接続口どうしはつなげない
+ * 接続口どうしをつないだときにできる新しいエッジ。つなげない、または同じ接続口どうしのエッジが既にあれば undefined。
+ * ワークフォルダの行の接続口へは、ツールの接続口からつないだときだけアクセスエッジができる。
+ * それ以外の接続口の id はエッジの種類で、種類の違う接続口どうしはつなげない
  */
-function connectionKind(definition: GraphDefinition, connection: Connection | Edge): EdgeKind | undefined {
-  const kind: EdgeKind = connection.sourceHandle === 'flow' ? 'flow' : 'tool';
-  if (connection.targetHandle !== kind) return undefined;
+function connectionEdge(definition: GraphDefinition, connection: Connection | Edge): GraphEdge | undefined {
   const source = definition.nodes.find((n) => n.id === connection.source);
   const target = definition.nodes.find((n) => n.id === connection.target);
-  if (!source || !target || !canConnect(source, target, kind)) return undefined;
-  const duplicate = definition.edges.some((e) => e.source === connection.source && e.target === connection.target && e.kind === kind);
-  return duplicate ? undefined : kind;
+  if (!source || !target) return undefined;
+  const id = crypto.randomUUID();
+  let edge: GraphEdge;
+  if (target.kind === 'workfolder') {
+    const entryId = entryIdOfHandle(target, connection.targetHandle);
+    if (connection.sourceHandle !== 'tool' || entryId === undefined) return undefined;
+    edge = { ...createEdge('access', id, source.id, target.id), entryId };
+  } else {
+    const kind: EdgeKind = connection.sourceHandle === 'flow' ? 'flow' : 'tool';
+    if (connection.targetHandle !== kind) return undefined;
+    edge = createEdge(kind, id, source.id, target.id);
+  }
+  if (!canConnect(source, target, edge.kind)) return undefined;
+  const { targetHandle } = handlesOf(edge);
+  const duplicate = definition.edges.some((e) => e.source === edge.source && e.target === edge.target && handlesOf(e).targetHandle === targetHandle);
+  return duplicate ? undefined : edge;
+}
+
+/** エッジの両端の接続口の id。アクセスエッジは、ツールの接続口からワークフォルダの行の接続口へつなぐ */
+function handlesOf(edge: GraphEdge): { sourceHandle: string; targetHandle: string } {
+  if (edge.kind === 'access') return { sourceHandle: 'tool', targetHandle: accessHandleId(edge.entryId) };
+  return { sourceHandle: edge.kind, targetHandle: edge.kind };
 }
 
 /**
@@ -191,9 +209,15 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
     >
       {roles.isTool && <Handle id="tool" type="target" position={Position.Top} />}
       {roles.receivesFlow && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}
-      <div className="text-2xs text-muted">{view.label}</div>
-      <div className="font-semibold">{nodeName(data.node)}</div>
-      <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>
+      {view.Contents ? (
+        <view.Contents node={data.node} />
+      ) : (
+        <>
+          <div className="text-2xs text-muted">{view.label}</div>
+          <div className="font-semibold">{nodeName(data.node)}</div>
+          {view.summary && <div className="max-w-[200px] truncate text-xs text-muted">{view.summary(data.node)}</div>}
+        </>
+      )}
       {data.warnings.length > 0 && (
         <div className="mt-1 text-xs text-warn" title={data.warnings.join('\n')}>
           ⚠ {data.warnings.length}

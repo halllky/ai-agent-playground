@@ -2,22 +2,29 @@ import { isInvocable, type EdgeKind, type GraphDefinition, type GraphNode, type 
 
 /**
  * ノード種別ごとの、グラフ上での役割。接続できる組み合わせはすべてここから決まる。
- * usesTools はツールを使う側、isTool はツールとして使われる側、receivesFlow / sendsFlow はフローを受け取れるか / 送り出せるか
+ * usesTools はツールとワークフォルダを使う側、isTool はツールとして使われる側、isWorkfolder はワークフォルダ、
+ * receivesFlow / sendsFlow はフローを受け取れるか / 送り出せるか
  */
-export const nodeRoles: Record<NodeKind, { usesTools: boolean; isTool: boolean; receivesFlow: boolean; sendsFlow: boolean }> = {
-  userInput: { usesTools: false, isTool: false, receivesFlow: false, sendsFlow: true },
-  userOutput: { usesTools: false, isTool: false, receivesFlow: true, sendsFlow: false },
-  agent: { usesTools: true, isTool: true, receivesFlow: true, sendsFlow: true },
-  files: { usesTools: false, isTool: true, receivesFlow: false, sendsFlow: false },
-  judge: { usesTools: false, isTool: true, receivesFlow: true, sendsFlow: true },
-  webSearch: { usesTools: false, isTool: true, receivesFlow: true, sendsFlow: true },
+export const nodeRoles: Record<NodeKind, { usesTools: boolean; isTool: boolean; isWorkfolder: boolean; receivesFlow: boolean; sendsFlow: boolean }> = {
+  userInput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: false, sendsFlow: true },
+  userOutput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: true, sendsFlow: false },
+  agent: { usesTools: true, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
+  workfolder: { usesTools: false, isTool: false, isWorkfolder: true, receivesFlow: false, sendsFlow: false },
+  judge: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
+  webSearch: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
 };
 
 /** source から target へ kind のエッジを張れるか */
 export function canConnect(source: GraphNode, target: GraphNode, kind: EdgeKind): boolean {
   if (source.id === target.id) return false;
-  if (kind === 'tool') return nodeRoles[source.kind].usesTools && nodeRoles[target.kind].isTool;
-  return nodeRoles[source.kind].sendsFlow && nodeRoles[target.kind].receivesFlow;
+  switch (kind) {
+    case 'tool':
+      return nodeRoles[source.kind].usesTools && nodeRoles[target.kind].isTool;
+    case 'access':
+      return nodeRoles[source.kind].usesTools && nodeRoles[target.kind].isWorkfolder;
+    case 'flow':
+      return nodeRoles[source.kind].sendsFlow && nodeRoles[target.kind].receivesFlow;
+  }
 }
 
 /**
@@ -69,6 +76,16 @@ export function removeNodes(graph: GraphDefinition, nodeIds: Iterable<string>): 
     ...graph,
     nodes: graph.nodes.filter((n) => !removed.has(n.id)),
     edges: graph.edges.filter((e) => !removed.has(e.source) && !removed.has(e.target)),
+  };
+}
+
+/** node と同じ id のノードを node に差し替えたグラフ。ワークフォルダのもう無いエントリへのアクセスエッジは取り除く */
+export function replaceNode(graph: GraphDefinition, node: GraphNode): GraphDefinition {
+  const entryIds = node.kind === 'workfolder' ? new Set(node.config.entries.map((e) => e.id)) : undefined;
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.id === node.id ? node : n)),
+    edges: graph.edges.filter((e) => !entryIds || e.kind !== 'access' || e.target !== node.id || e.entryId === null || entryIds.has(e.entryId)),
   };
 }
 

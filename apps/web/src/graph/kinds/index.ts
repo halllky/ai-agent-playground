@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react';
 import type { EdgeKind, EdgeOf, GraphDefinition, GraphEdge, GraphNode, NodeKind, NodeOf } from 'protocol';
 import { agentView } from './agent.tsx';
-import { flowEdgeView, toolEdgeView } from './edges.tsx';
-import { filesView } from './files.tsx';
+import { accessEdgeView, flowEdgeView, toolEdgeView } from './edges.tsx';
 import { judgeView } from './judge.tsx';
 import { userInputView, userOutputView } from './user.tsx';
 import { webSearchView } from './webSearch.tsx';
+import { workfolderView } from './workfolder.tsx';
 
 /**
  * ノード種別ごとの画面上の振る舞い。接続口はノードの役割で決まるので、ここでは持たない。
@@ -16,8 +16,10 @@ export type NodeKindView<K extends NodeKind> = {
   label: string;
   /** グラフに1つだけ置き、削除できないノードか。無いときだけパレットから追加できる */
   fixed?: boolean;
-  /** ノード本体に出す要約 */
-  summary(node: NodeOf<K>): string;
+  /** ノード本体の、名前の下に出す要約 */
+  summary?(node: NodeOf<K>): string;
+  /** ノード本体の中身を、種別名・名前・要約の代わりに自前で描くもの */
+  Contents?(props: { node: NodeOf<K> }): ReactNode;
   /** graph は node を含む、表示中のグラフ */
   Inspector(props: { node: NodeOf<K>; graph: GraphDefinition; onChange: (node: NodeOf<K>) => void }): ReactNode;
 };
@@ -37,7 +39,7 @@ export const nodeKindViews: { [K in NodeKind]: NodeKindView<K> } = {
   userInput: userInputView,
   userOutput: userOutputView,
   agent: agentView,
-  files: filesView,
+  workfolder: workfolderView,
   webSearch: webSearchView,
   judge: judgeView,
 };
@@ -52,14 +54,14 @@ export function nodeKindView(node: GraphNode): NodeKindView<NodeKind> {
   return nodeKindViews[node.kind] as NodeKindView<NodeKind>;
 }
 
-/** ノードの表示名。フォルダはワークフォルダでのパス */
+/** ノードの表示名 */
 export function nodeName(node: GraphNode): string {
   switch (node.kind) {
     case 'userInput':
     case 'userOutput':
       return 'ユーザー';
-    case 'files':
-      return node.config.path ? `${node.config.path}/` : 'ワークフォルダ全体';
+    case 'workfolder':
+      return 'ワークフォルダ';
     default:
       return node.config.name;
   }
@@ -76,4 +78,4 @@ export function edgeKindView(edge: GraphEdge): EdgeKindView<EdgeKind> {
   return edgeKindViews[edge.kind] as EdgeKindView<EdgeKind>;
 }
 
-const edgeKindViews: { [K in EdgeKind]: EdgeKindView<K> } = { tool: toolEdgeView, flow: flowEdgeView };
+const edgeKindViews: { [K in EdgeKind]: EdgeKindView<K> } = { tool: toolEdgeView, access: accessEdgeView, flow: flowEdgeView };

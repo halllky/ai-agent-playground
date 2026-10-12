@@ -1,12 +1,17 @@
 import { defaultModelOf } from '../model.ts';
 import type { EdgeKind, EdgeOf, GraphDefinition, GraphNode, NodeKind, NodeOf } from './schema.ts';
 
-/** 新規グラフの既定の構成。ユーザーの発言をエージェント1つが受けて返す。フローが左から右へ流れるように並べる */
+/** 新規グラフの既定の構成。ユーザーの発言をエージェント1つが受けて返す。フローが左から右へ流れるように並べ、空のワークフォルダをその下に置く */
 export function createDefaultGraph(): GraphDefinition {
   const agent = createNode('agent', 'assistant', { x: 300, y: 0 });
   agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', history: 'sessionCalls' };
   return {
-    nodes: [createNode('userInput', 'input', { x: 0, y: 0 }), agent, createNode('userOutput', 'output', { x: 600, y: 0 })],
+    nodes: [
+      createNode('userInput', 'input', { x: 0, y: 0 }),
+      agent,
+      createNode('userOutput', 'output', { x: 600, y: 0 }),
+      createNode('workfolder', 'workfolder', { x: 300, y: 160 }),
+    ],
     edges: [createEdge('flow', 'input-assistant', 'input', 'assistant'), createEdge('flow', 'assistant-output', 'assistant', 'output')],
     settings: { maxCallDepth: 5 },
   };
@@ -17,7 +22,7 @@ export function createNode<K extends NodeKind>(kind: K, id: string, position: Gr
   return nodeFactories[kind](id, position);
 }
 
-/** 既定の設定を持つ新しいエッジ。ツールなら参照のみ、フローなら無条件 */
+/** 既定の設定を持つ新しいエッジ。アクセスならワークフォルダ全体の参照のみ、フローなら無条件 */
 export function createEdge<K extends EdgeKind>(kind: K, id: string, source: string, target: string): EdgeOf<K> {
   return edgeFactories[kind](id, source, target);
 }
@@ -42,12 +47,7 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
       returns: 'finalText',
     },
   }),
-  files: (id, position) => ({
-    id,
-    kind: 'files',
-    position,
-    config: { path: '', description: '', files: [] },
-  }),
+  workfolder: (id, position) => ({ id, kind: 'workfolder', position, config: { description: '', entries: [] } }),
   judge: (id, position) => ({
     id,
     kind: 'judge',
@@ -63,6 +63,7 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
 };
 
 const edgeFactories: { [K in EdgeKind]: (id: string, source: string, target: string) => EdgeOf<K> } = {
-  tool: (id, source, target) => ({ id, kind: 'tool', source, target, permission: 'read' }),
+  tool: (id, source, target) => ({ id, kind: 'tool', source, target }),
+  access: (id, source, target) => ({ id, kind: 'access', source, target, entryId: null, permission: 'read' }),
   flow: (id, source, target) => ({ id, kind: 'flow', source, target, condition: null }),
 };

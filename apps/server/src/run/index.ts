@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
 import { asc, eq, max } from 'drizzle-orm';
-import { pathInFolder, type GraphDefinition, type RunEvent, type RunEventBody, type TurnFiles, type TurnRecord, type WorkfolderFiles } from 'protocol';
+import { initialFiles, type GraphDefinition, type RunEvent, type RunEventBody, type TurnFiles, type TurnRecord, type WorkfolderFiles } from 'protocol';
 import { db, runEvents, turns, type TurnState } from '../db/index.ts';
 import { runFlow, type FlowOutcome } from './flow.ts';
 import { turnHeader, type CallHeader, type RunScope } from './invoke.ts';
@@ -135,23 +135,19 @@ class Run implements RunScope {
   }
 
   /**
-   * files ノードの初期ファイルを、この会話でまだ写していなければワークフォルダに写す。以降の編集はこの会話の中だけに効く。
-   * 同じパスのファイルがすでにあれば、会話の中の中身を残して写さない
+   * 会話の先頭のターンなら、ワークフォルダノードの初期エントリのファイルをワークフォルダに写す。
+   * 会話の始まりの時点の内容なので、会話の途中で初期エントリを変えても、続くターンには写さない
    */
   private seedFiles(): void {
+    const node = this.graph.nodes.find((n) => n.kind === 'workfolder');
+    if (this.turn.parentTurnId !== null || !node) return;
     const workfolder = new Workfolder(this.state.files, () => {});
-    for (const node of this.graph.nodes) {
-      if (node.kind !== 'files' || this.state.seededFolders.includes(node.id)) continue;
-      this.state.seededFolders.push(node.id);
-      for (const file of node.config.files) {
-        const path = pathInFolder(node.config.path, file.path);
-        if (workfolder.has(path)) continue;
-        try {
-          workfolder.write(path, file.content);
-        } catch (e) {
-          if (!(e instanceof FileError)) throw e;
-          this.emit(turnHeader, { type: 'log', level: 'warn', message: `初期ファイル ${path} を写せませんでした: ${e.message}` });
-        }
+    for (const [path, content] of Object.entries(initialFiles(node))) {
+      try {
+        workfolder.write(path, content);
+      } catch (e) {
+        if (!(e instanceof FileError)) throw e;
+        this.emit(turnHeader, { type: 'log', level: 'warn', message: `初期ファイル ${path} を写せませんでした: ${e.message}` });
       }
     }
     this.saveState();
@@ -161,7 +157,7 @@ class Run implements RunScope {
 /** parentTurnId のターンが終わった時点の状態の写し。会話の先頭なら空 */
 function stateAfter(parentTurnId: string | null): TurnState {
   const parent = parentTurnId ? db.select({ state: turns.state }).from(turns).where(eq(turns.id, parentTurnId)).get() : undefined;
-  return parent?.state ?? { files: {}, seededFolders: [], memories: {} };
+  return parent?.state ?? { files: {}, memories: {} };
 }
 
 /** before から after までに追加・変更・削除されたパス */

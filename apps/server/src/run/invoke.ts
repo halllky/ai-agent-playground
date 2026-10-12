@@ -3,7 +3,7 @@ import type { ModelMessage, Tool, ToolSet } from 'ai';
 import { isInvocable, type GraphDefinition, type InvocableNode, type NodeOf, type RunEventBody, type RunEventHeader, type RunStatus } from 'protocol';
 import type { TurnState } from '../db/index.ts';
 import { agentTool, invokeAgent } from './nodes/agent.ts';
-import { Workfolder, workfolderTools, type FolderAccess } from './nodes/files.ts';
+import { Workfolder, workfolderTools } from './nodes/files.ts';
 import { judge, judgeTool, type Verdict } from './nodes/judge.ts';
 import { search, webSearchTool } from './nodes/webSearch.ts';
 
@@ -94,21 +94,16 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
 
 /**
  * エージェントから出るツールエッジを、そのエージェントが使えるツールに変換する。ツールは呼び出しごとに逐次実行される。
- * フォルダへのエッジは、それらの権限をまとめた1組のワークフォルダのツールになる
+ * アクセスエッジは、それらの権限をまとめた1組のワークフォルダのツールになる
  */
 function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, callId: string | null, depth: number): ToolSet {
   const tools: ToolSet = {};
-  const access: FolderAccess[] = [];
   for (const edge of scope.graph.edges) {
     if (edge.kind !== 'tool' || edge.source !== agent.id) continue;
     const target = scope.graph.nodes.find((n) => n.id === edge.target);
-    if (target?.kind === 'files') {
-      access.push({ folder: target.config.path, permission: edge.permission, description: target.config.description });
-    } else if (target && isInvocable(target)) {
-      tools[target.config.name] = nodeTool(scope, target, callId, depth + 1);
-    }
+    if (target && isInvocable(target)) tools[target.config.name] = nodeTool(scope, target, callId, depth + 1);
   }
-  Object.assign(tools, workfolderTools(access, new Workfolder(scope.state.files, () => scope.saveState())));
+  Object.assign(tools, workfolderTools(scope.graph, agent, new Workfolder(scope.state.files, () => scope.saveState())));
   return serialized(tools);
 }
 

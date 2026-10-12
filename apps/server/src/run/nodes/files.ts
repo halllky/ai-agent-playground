@@ -1,7 +1,20 @@
 import { tool, type Tool, type ToolSet } from 'ai';
 import jsonPatch, { type Operation } from 'fast-json-patch';
 import { z } from 'zod';
-import { fileOperationsFor, filePathError, fileToolName, folderLabel, isInFolder, type AccessPermission, type FileOperation } from 'protocol';
+import {
+  agentAccess,
+  entryPath,
+  fileOperationsFor,
+  filePathError,
+  fileToolName,
+  isInScope,
+  scopeLabel,
+  type AccessPermission,
+  type FileOperation,
+  type GraphDefinition,
+  type NodeOf,
+  type WorkfolderAccess,
+} from 'protocol';
 
 /** エージェントにそのまま見せられる理由を持つ、ファイル操作の失敗 */
 export class FileError extends Error {}
@@ -80,21 +93,20 @@ export class Workfolder {
   }
 }
 
-/** エージェントに与えた、ワークフォルダの中のフォルダ1つへの権限。folder が空ならワークフォルダ全体 */
-export type FolderAccess = { folder: string; permission: AccessPermission; description: string };
-
 /**
- * ワークフォルダを access の範囲で操作するツール。ツールは最も強い権限の分だけ渡し、パスごとの権限は実行時に検査する。
- * パスの権限は、そのパスを含むフォルダへの権限のうち最も強いもの。
+ * agent がアクセスエッジで与えられた範囲で、ワークフォルダを操作するツール。ツールは最も強い権限の分だけ渡し、パスごとの権限は実行時に検査する。
+ * パスの権限は、そのパスを含む範囲への権限のうち最も強いもの。
  * 操作の失敗は例外として投げ、AI SDK がツールのエラーとしてエージェントに返す。
  */
-export function workfolderTools(access: FolderAccess[], workfolder: Workfolder): ToolSet {
+export function workfolderTools(graph: GraphDefinition, agent: NodeOf<'agent'>, workfolder: Workfolder): ToolSet {
+  const access = agentAccess(graph, agent);
   if (access.length === 0) return {};
   const scoped = new ScopedWorkfolder(access, workfolder);
   const permission: AccessPermission = access.some((a) => a.permission === 'write') ? 'write' : 'read';
+  const guide = { summary: scopeSummaryOf(access), descriptions: descriptionsOf(graph.nodes.find((n) => n.kind === 'workfolder'), access) };
   const tools: ToolSet = {};
   for (const operation of fileOperationsFor(permission)) {
-    tools[fileToolName(operation)] = operationTools[operation](scoped, scopeSummaryOf(access));
+    tools[fileToolName(operation)] = operationTools[operation](scoped, guide);
   }
   return tools;
 }
@@ -102,7 +114,7 @@ export function workfolderTools(access: FolderAccess[], workfolder: Workfolder):
 /** Workfolder のうち、権限のある範囲だけを操作できるもの。範囲外の操作は FileError を投げる */
 class ScopedWorkfolder {
   constructor(
-    readonly access: FolderAccess[],
+    private readonly access: WorkfolderAccess[],
     private readonly workfolder: Workfolder,
   ) {}
 
@@ -139,77 +151,86 @@ class ScopedWorkfolder {
     const permission = this.permissionFor(path);
     if (permission === 'write' || permission === needed) return;
     const verb = needed === 'write' ? '編集' : '参照';
-    const allowed = this.access.filter((a) => needed === 'read' || a.permission === 'write').map((a) => folderLabel(a.folder));
+    const allowed = this.access.filter((a) => needed === 'read' || a.permission === 'write').map((a) => scopeLabel(a.scope));
     throw new FileError(`${path} を${verb}する権限がありません。${verb}できる範囲: ${allowed.join(', ')}`);
   }
 
   private permissionFor(path: string): AccessPermission | null {
-    const permissions = this.access.filter((a) => isInFolder(path, a.folder)).map((a) => a.permission);
+    const permissions = this.access.filter((a) => isInScope(path, a.scope)).map((a) => a.permission);
     return permissions.includes('write') ? 'write' : permissions.includes('read') ? 'read' : null;
   }
 }
 
-/** ツールの説明の頭に付ける、ワークフォルダと権限の範囲の要約 */
-function scopeSummaryOf(access: FolderAccess[]): string {
-  const ranges = access.map((a) => `${folderLabel(a.folder)}（${a.permission === 'write' ? '編集' : '参照'}）`);
+/** ツールの説明に載せるもの。summary はワークフォルダと権限の範囲の要約で、descriptions は list の説明にだけ載せる各範囲の説明 */
+type ToolGuide = { summary: string; descriptions: string };
+
+function scopeSummaryOf(access: WorkfolderAccess[]): string {
+  const ranges = access.map((a) => `${scopeLabel(a.scope)}（${a.permission === 'write' ? '編集' : '参照'}）`);
   return `ワークフォルダ。権限のある範囲: ${ranges.join(', ')}`;
 }
 
-/** list の説明には、フォルダごとの説明も載せる */
-function folderDescriptionsOf(access: FolderAccess[]): string {
-  return access
-    .filter((a) => a.description)
-    .map((a) => `\n- ${folderLabel(a.folder)}: ${a.description}`)
-    .join('');
+/** ワークフォルダ全体の説明と、権限のある範囲にある初期エントリの説明を、1行ずつ並べたもの */
+function descriptionsOf(workfolder: NodeOf<'workfolder'> | undefined, access: WorkfolderAccess[]): string {
+  if (!workfolder) return '';
+  const { description, entries } = workfolder.config;
+  const lines = description ? [`
+- 全体: ${description}`] : [];
+  for (const entry of entries) {
+    const path = entryPath(entries, entry);
+    if (!entry.description || !access.some((a) => isInScope(path, a.scope))) continue;
+    lines.push(`
+- ${scopeLabel({ path, isFolder: entry.type === 'folder' })}: ${entry.description}`);
+  }
+  return lines.join('');
 }
 
-type OperationTool = (folder: ScopedWorkfolder, summary: string) => Tool;
+type OperationTool = (folder: ScopedWorkfolder, guide: ToolGuide) => Tool;
 
 const pathSchema = z.string().describe('ワークフォルダでの / 区切りの相対パス（例: notes/plan.md）');
 
 const operationTools: Record<FileOperation, OperationTool> = {
-  list: (folder, summary) =>
+  list: (folder, guide) =>
     tool({
-      description: `${summary}。権限のある範囲のファイルのパスの一覧を返す${folderDescriptionsOf(folder.access)}`,
+      description: `${guide.summary}。権限のある範囲のファイルのパスの一覧を返す${guide.descriptions}`,
       inputSchema: z.object({}),
       execute: async () => folder.list(),
     }),
-  read: (folder, summary) =>
+  read: (folder, guide) =>
     tool({
-      description: `${summary}。ファイルの中身を読む`,
+      description: `${guide.summary}。ファイルの中身を読む`,
       inputSchema: z.object({ path: pathSchema }),
       execute: async ({ path }) => folder.read(path),
     }),
-  write: (folder, summary) =>
+  write: (folder, guide) =>
     tool({
-      description: `${summary}。Markdown（.md）か JSON（.json）のファイルを作る、または中身全体を書き換える`,
+      description: `${guide.summary}。Markdown（.md）か JSON（.json）のファイルを作る、または中身全体を書き換える`,
       inputSchema: z.object({ path: pathSchema, content: z.string() }),
       execute: async ({ path, content }) => {
         folder.write(path, content);
         return `${path} に書き込みました`;
       },
     }),
-  delete: (folder, summary) =>
+  delete: (folder, guide) =>
     tool({
-      description: `${summary}。ファイルを削除する`,
+      description: `${guide.summary}。ファイルを削除する`,
       inputSchema: z.object({ path: pathSchema }),
       execute: async ({ path }) => {
         folder.delete(path);
         return `${path} を削除しました`;
       },
     }),
-  edit_markdown: (folder, summary) =>
+  edit_markdown: (folder, guide) =>
     tool({
-      description: `${summary}。Markdown ファイルの一部を置き換える。oldString はファイル内にちょうど1回現れる文字列にする`,
+      description: `${guide.summary}。Markdown ファイルの一部を置き換える。oldString はファイル内にちょうど1回現れる文字列にする`,
       inputSchema: z.object({ path: pathSchema, oldString: z.string(), newString: z.string() }),
       execute: async ({ path, oldString, newString }) => {
         folder.editMarkdown(path, oldString, newString);
         return `${path} を編集しました`;
       },
     }),
-  patch_json: (folder, summary) =>
+  patch_json: (folder, guide) =>
     tool({
-      description: `${summary}。JSON ファイルの一部を JSON Patch（RFC 6902）で書き換える`,
+      description: `${guide.summary}。JSON ファイルの一部を JSON Patch（RFC 6902）で書き換える`,
       inputSchema: z.object({
         path: pathSchema,
         operations: z.array(

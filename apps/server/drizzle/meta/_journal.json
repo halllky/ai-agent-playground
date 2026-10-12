@@ -29,6 +29,13 @@
       "when": 1791782326063,
       "tag": "0003_graphs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791787749729,
+      "tag": "0004_single_workfolder",
+      "breakpoints": true
     }
   ]
 }

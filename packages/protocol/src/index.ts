@@ -3,6 +3,7 @@ export * from './graph/schema.ts';
 export * from './graph/defaults.ts';
 export * from './graph/connections.ts';
 export * from './graph/tools.ts';
+export * from './graph/workfolder.ts';
 export * from './graph/diagnostics.ts';
 export * from './runEvent.ts';
 export * from './api.ts';

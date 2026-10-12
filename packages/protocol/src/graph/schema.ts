@@ -9,9 +9,9 @@ import { modelProviders } from '../model.ts';
 export const historyModes = ['none', 'recentConversation', 'conversation', 'turnCalls', 'sessionCalls'] as const;
 /** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる。フローでは受け取った入力をそのまま後段へ流す */
 export const returnModes = ['finalText', 'allSteps', 'none'] as const;
-/** フォルダへのアクセス権限。write は read を含む */
+/** ワークフォルダへのアクセス権限。write は read を含む */
 export const accessPermissions = ['read', 'write'] as const;
-/** フォルダへのアクセス権限 */
+/** ワークフォルダへのアクセス権限 */
 export type AccessPermission = (typeof accessPermissions)[number];
 /** Web検索の深さ。advanced は精度が上がるがクレジットを多く使う */
 export const searchDepths = ['basic', 'advanced'] as const;
@@ -59,6 +59,22 @@ const flowConditionSchema = z.object({
 /** フローエッジに流す条件。判定ノードの回答で決まる */
 export type FlowCondition = z.infer<typeof flowConditionSchema>;
 
+const workfolderEntryBase = {
+  id: z.string(),
+  /** 親のフォルダのエントリの id。null ならワークフォルダの直下 */
+  parentId: z.string().nullable(),
+  /** パスの1階層分の名前 */
+  name: z.string(),
+  /** エージェントに見せる説明 */
+  description: z.string(),
+};
+const workfolderEntrySchema = z.discriminatedUnion('type', [
+  z.object({ ...workfolderEntryBase, type: z.literal('folder') }),
+  z.object({ ...workfolderEntryBase, type: z.literal('file'), content: z.string() }),
+]);
+/** ワークフォルダノードに置く、会話の始まりの時点のファイルかフォルダ1つ。親子は parentId でたどる */
+export type WorkfolderEntry = z.infer<typeof workfolderEntrySchema>;
+
 /**
  * グラフのノード。形式だけを検証し、接続の妥当性などの意味的な検査はしない。
  * 呼び出せるノードの config.name は、呼び出し元から見えるツール名になる
@@ -102,21 +118,19 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     }),
   }),
   /**
-   * ワークフォルダの中のフォルダ。ワークフォルダはセッションに1つで、Markdown / JSON ファイルを置く。
-   * エージェントからのツールエッジで、このフォルダ以下への権限を与える。
-   * 会話で初めて使うときに files を写し（すでに同じパスのファイルがあれば写さない）、以降の中身はターンごとに残る
+   * ワークフォルダ。セッションに1つで、Markdown / JSON ファイルを置く。グラフに1つだけ置く。
+   * エージェントからのアクセスエッジで、ワークフォルダ全体か、その中のファイル・フォルダへの権限を与える。
+   * 会話の先頭のターンで entries のファイルを写し、以降の中身はターンごとに残る
    */
   z.object({
     id: z.string(),
-    kind: z.literal('files'),
+    kind: z.literal('workfolder'),
     position: positionSchema,
     config: z.object({
-      /** ワークフォルダの中のフォルダのパス。空ならワークフォルダ全体 */
-      path: z.string(),
-      /** エージェントに見せるフォルダの説明 */
+      /** エージェントに見せるワークフォルダ全体の説明 */
       description: z.string(),
-      /** 初期ファイル。path はこのフォルダからの相対パス */
-      files: z.array(z.object({ path: z.string(), content: z.string() })),
+      /** 会話の始まりの時点で置くファイル・フォルダ */
+      entries: z.array(workfolderEntrySchema),
     }),
   }),
   /**
@@ -163,12 +177,20 @@ export function isInvocable(node: GraphNode): node is InvocableNode {
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [
-  /** 送り元のエージェントが、送り先をツールとして使う。permission は送り先が files ノードのときだけ意味を持ち、そのフォルダ以下への権限になる */
+  /** 送り元のエージェントが、送り先をツールとして使う */
   z.object({
     id: z.string(),
     kind: z.literal('tool'),
     source: z.string(),
     target: z.string(),
+  }),
+  /** 送り元のエージェントに、送り先のワークフォルダの中のエントリ（null なら全体）以下への権限を与える */
+  z.object({
+    id: z.string(),
+    kind: z.literal('access'),
+    source: z.string(),
+    target: z.string(),
+    entryId: z.string().nullable(),
     permission: z.enum(accessPermissions),
   }),
   /** 送り元の出力を、送り先の入力として流す */

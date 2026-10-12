@@ -2,9 +2,9 @@ import { useId } from 'react';
 import {
   defaultModelOf,
   historyModes,
+  initialFiles,
   modelProviderLabels,
   modelProviders,
-  pathInFolder,
   returnModes,
   type GraphDefinition,
   type GraphEdge,
@@ -106,11 +106,11 @@ function RequestSources({ graph, agentId }: { graph: GraphDefinition; agentId: s
   );
 }
 
-/** 今回のメッセージに中身を入れる、ワークフォルダのファイル。候補には、グラフのフォルダの初期ファイルを出す。パスの誤りはグラフの警告に出す */
+/** 今回のメッセージに中身を入れる、ワークフォルダのファイル。候補には、ワークフォルダの会話の始まりの時点のファイルを出す。パスの誤りはグラフの警告に出す */
 function AttachmentsField(props: { graph: GraphDefinition; paths: string[]; onChange: (paths: string[]) => void }) {
   const { graph, paths, onChange } = props;
   const listId = useId();
-  const suggestions = graph.nodes.flatMap((n) => (n.kind === 'files' ? n.config.files.map((f) => pathInFolder(n.config.path, f.path)) : []));
+  const suggestions = graph.nodes.flatMap((n) => (n.kind === 'workfolder' ? Object.keys(initialFiles(n)) : []));
   return (
     <fieldset className="mb-2 flex flex-col gap-0.5">
       <legend className="mb-0.5 text-xs text-muted">ワークフォルダのファイル（その時点の中身）</legend>
@@ -129,7 +129,7 @@ function AttachmentsField(props: { graph: GraphDefinition; paths: string[]; onCh
         </div>
       ))}
       <datalist id={listId}>
-        {[...new Set(suggestions)].map((path) => (
+        {suggestions.map((path) => (
           <option key={path} value={path} />
         ))}
       </datalist>
