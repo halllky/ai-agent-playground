@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TurnRecord } from 'protocol';
 import { turnPath } from '../session/branches.ts';
+import { SessionBar } from '../session/SessionBar.tsx';
 import { abort, send, useSession } from '../session/store.ts';
 import { TotalsLine, totalsOf } from './totals.tsx';
 import { TurnView } from './TurnView.tsx';
 
 /**
- * 表示中の分岐の会話と、発言の入力欄。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。
+ * 会話の切り替えと、表示中の分岐の会話、発言の入力欄。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。
  * 過去の発言からは、編集して再送信・再実行で分岐を作り、分岐を切り替えて閲覧できる。
  * 実行は1セッションに1つまでとし、実行中は送信・分岐の作成をできなくする。
  */
@@ -24,6 +25,7 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col">
+      <SessionBar />
       <BranchTotals path={path} />
       <div className="flex-1 overflow-y-auto p-3">
         {path.map((turn) => (

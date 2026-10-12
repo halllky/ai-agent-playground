@@ -14,7 +14,7 @@ import {
   type RunEvent,
   type RunEventOf,
 } from 'protocol';
-import { db, sessions } from '../db/index.ts';
+import { db, graphs, sessions } from '../db/index.ts';
 import { abortTurn, followTurn, startTurn, turnFiles } from './index.ts';
 
 /** モデルID ごとに、受け取ったプロンプトから返すストリームを決める台本 */
@@ -609,8 +609,10 @@ function flowEdge(source: string, target: string, condition: FlowCondition | nul
 }
 
 function createSession(graph: GraphDefinition): string {
+  const graphId = randomUUID();
+  db.insert(graphs).values({ id: graphId, name: 'test', definition: graph, createdAt: Date.now() }).run();
   const sessionId = randomUUID();
-  db.insert(sessions).values({ id: sessionId, title: 'test', graph, activeTurnId: null, createdAt: Date.now() }).run();
+  db.insert(sessions).values({ id: sessionId, graphId, title: 'test', activeTurnId: null, createdAt: Date.now() }).run();
   return sessionId;
 }
 

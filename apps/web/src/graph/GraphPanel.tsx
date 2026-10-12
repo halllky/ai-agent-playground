@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Allotment } from 'allotment';
 import { ReactFlowProvider } from '@xyflow/react';
 import { diagnoseGraph, type GraphWarning, type TurnRecord } from 'protocol';
-import { loadTurnGraph, showTurnGraph, useSession } from '../session/store.ts';
+import { showTurnGraph, useSession } from '../session/store.ts';
 import { EmptyNote } from '../ui/primitives.tsx';
 import { Canvas } from './Canvas.tsx';
 import { Inspector } from './Inspector.tsx';
@@ -12,11 +12,11 @@ export type Selection = { nodeId: string } | { edgeId: string } | null;
 
 /**
  * 編集中のグラフのキャンバスとインスペクタ。
- * ターンの実行時のグラフを表示しているときは、読み取り専用で表示する。
+ * ターンの実行時のグラフを表示しているときは、そのログを読み取り専用で表示する。
  */
 export function GraphPanel() {
   const graph = useSession((s) => s.graph);
-  const sessionId = useSession((s) => s.sessionId);
+  const graphId = useSession((s) => s.graphId);
   const viewingTurn = useSession((s) => s.turns.find((t) => t.id === s.viewingTurnId));
   const models = useSession((s) => s.models);
   const [selection, setSelection] = useState<Selection>(null);
@@ -32,7 +32,7 @@ export function GraphPanel() {
         <Allotment vertical defaultSizes={[65, 35]}>
           <Allotment.Pane minSize={120}>
             {/* 表示するグラフを切り替えたときに表示範囲を合わせ直すため、グラフごとに作り直す */}
-            <ReactFlowProvider key={viewingTurn?.id ?? sessionId}>
+            <ReactFlowProvider key={viewingTurn?.id ?? graphId}>
               <Canvas definition={definition} warningsOf={warningsOf} readOnly={readOnly} selection={selection} onSelect={setSelection} />
             </ReactFlowProvider>
           </Allotment.Pane>
@@ -51,9 +51,6 @@ function TurnGraphBanner({ turn }: { turn: TurnRecord }) {
       <span className="min-w-0 flex-1 truncate" title={turn.userText}>
         「{turn.userText}」の実行時のグラフ（読み取り専用）
       </span>
-      <button title="保存するまではセッションに反映しません" onClick={() => loadTurnGraph(turn)}>
-        このグラフを編集する
-      </button>
       <button onClick={() => showTurnGraph(null)}>現在のグラフに戻る</button>
     </div>
   );

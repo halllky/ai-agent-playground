@@ -1,11 +1,19 @@
 import type { GraphDefinition } from './graph/schema.ts';
 import type { RunStatus } from './runEvent.ts';
 
-/** 1つの会話。ターンの分岐をすべて含み、次に実行するターンで使うグラフを持つ */
+/** エージェントの構成。属する会話のターンはすべて、実行時点のこのグラフで動く */
+export type GraphRecord = {
+  id: string;
+  name: string;
+  definition: GraphDefinition;
+  createdAt: number;
+};
+
+/** グラフに属する1つの会話。ターンの分岐をすべて含む */
 export type SessionRecord = {
   id: string;
+  graphId: string;
   title: string;
-  graph: GraphDefinition;
   /** 表示中の分岐の末端ターン */
   activeTurnId: string | null;
   createdAt: number;
@@ -17,7 +25,7 @@ export type TurnRecord = {
   sessionId: string;
   parentTurnId: string | null;
   userText: string;
-  /** 実行時に使ったグラフ。後でセッションのグラフを編集しても変わらない */
+  /** 実行時に使ったグラフの写し。閲覧専用のログで、後でグラフを編集しても変わらない */
   graph: GraphDefinition;
   status: RunStatus;
   /** ユーザー出力ノードへ流れ込んだ返答。実行中は空 */

@@ -1,7 +1,7 @@
 import { defaultModelOf } from '../model.ts';
 import type { EdgeKind, EdgeOf, GraphDefinition, GraphNode, NodeKind, NodeOf } from './schema.ts';
 
-/** 新規セッションのグラフ。ユーザーの発言をエージェント1つが受けて返す。フローが左から右へ流れるように並べる */
+/** 新規グラフの既定の構成。ユーザーの発言をエージェント1つが受けて返す。フローが左から右へ流れるように並べる */
 export function createDefaultGraph(): GraphDefinition {
   const agent = createNode('agent', 'assistant', { x: 300, y: 0 });
   agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', history: 'sessionCalls' };

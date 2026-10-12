@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
+import { graphRoutes } from './routes/graphs.ts';
 import { modelRoutes } from './routes/models.ts';
 import { sessionRoutes } from './routes/sessions.ts';
 import { turnRoutes } from './routes/turns.ts';
@@ -11,6 +12,7 @@ closeInterruptedTurns();
 const app = new Hono()
   .basePath('/api')
   .use(logger())
+  .route('/graphs', graphRoutes)
   .route('/sessions', sessionRoutes)
   .route('/turns', turnRoutes)
   .route('/models', modelRoutes);

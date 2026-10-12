@@ -1,38 +1,17 @@
-import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, getTableColumns } from 'drizzle-orm';
+import { and, asc, eq, getTableColumns } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { createDefaultGraph, graphDefinitionSchema, type SessionDetail, type SessionRecord, type TurnRecord } from 'protocol';
-import { db, sessions, turns } from '../db/index.ts';
+import type { SessionDetail, SessionRecord, TurnRecord } from 'protocol';
+import { db, graphs, sessions, turns } from '../db/index.ts';
 import { startTurn } from '../run/index.ts';
 import { parseBody } from './parseBody.ts';
 
-/** copyFrom を指定すると、そのセッションのグラフを写して始める。無ければ既定のグラフ */
-const createSchema = z.object({ copyFrom: z.string().optional() });
-const updateSchema = z
-  .strictObject({
-    graph: graphDefinitionSchema.optional(),
-    activeTurnId: z.string().nullable().optional(),
-  })
-  .refine((body) => Object.keys(body).length > 0, '更新する項目がありません');
+const updateSchema = z.strictObject({ activeTurnId: z.string().nullable() });
 const createTurnSchema = z.object({ parentTurnId: z.string().nullable(), userText: z.string().min(1) });
 
-/** セッションの一覧・作成・更新・削除と、ターンの開始 */
+/** 会話の閲覧・表示中の分岐の切り替え・削除と、ターンの開始。会話の一覧・作成はグラフ側で扱う */
 export const sessionRoutes = new Hono()
-  .get('/', (c) => c.json<SessionRecord[]>(db.select().from(sessions).orderBy(desc(sessions.createdAt)).all()))
-  .post('/', async (c) => {
-    const body = await parseBody(c, createSchema);
-    const record: SessionRecord = {
-      id: randomUUID(),
-      title: new Date().toLocaleString('ja-JP'),
-      graph: body.copyFrom ? findSession(body.copyFrom).graph : createDefaultGraph(),
-      activeTurnId: null,
-      createdAt: Date.now(),
-    };
-    db.insert(sessions).values(record).run();
-    return c.json(record, 201);
-  })
   .get('/:id', (c) => {
     const session = findSession(c.req.param('id'));
     const { state: _, ...columns } = getTableColumns(turns);
@@ -44,7 +23,7 @@ export const sessionRoutes = new Hono()
     const record = db.update(sessions).set(body).where(eq(sessions.id, c.req.param('id'))).returning().get();
     return record ? c.json<SessionRecord>(record) : c.notFound();
   })
-  /** セッションを会話ごと消す。実行中のターンがあれば、実行を残したまま消さないよう断る */
+  /** 会話を消す。実行中のターンがあれば、実行を残したまま消さないよう断る */
   .delete('/:id', (c) => {
     const id = c.req.param('id');
     if (db.select({ id: turns.id }).from(turns).where(and(eq(turns.sessionId, id), eq(turns.status, 'running'))).get()) {
@@ -54,14 +33,15 @@ export const sessionRoutes = new Hono()
     db.delete(sessions).where(eq(sessions.id, id)).run();
     return c.body(null, 204);
   })
-  /** セッションの現在のグラフで新しいターンを実行し、表示中の分岐をそのターンに切り替える */
+  /** 会話が属するグラフの今の構成で新しいターンを実行し、表示中の分岐をそのターンに切り替える */
   .post('/:id/turns', async (c) => {
     const session = findSession(c.req.param('id'));
     const { parentTurnId, userText } = await parseBody(c, createTurnSchema);
     if (parentTurnId && !db.select({ id: turns.id }).from(turns).where(and(eq(turns.id, parentTurnId), eq(turns.sessionId, session.id))).get()) {
       throw new HTTPException(400, { message: '親ターンがこのセッションにありません' });
     }
-    const turn = startTurn(session.id, session.graph, parentTurnId, userText);
+    const graph = db.select({ definition: graphs.definition }).from(graphs).where(eq(graphs.id, session.graphId)).get()!;
+    const turn = startTurn(session.id, graph.definition, parentTurnId, userText);
     db.update(sessions).set({ activeTurnId: turn.id }).where(eq(sessions.id, session.id)).run();
     return c.json(turn, 201);
   });

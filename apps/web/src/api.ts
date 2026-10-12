@@ -1,14 +1,19 @@
-import type { GraphDefinition, ModelInfo, ModelProvider, RunEvent, SessionDetail, SessionRecord, TurnFiles, TurnRecord } from 'protocol';
+import type { GraphDefinition, GraphRecord, ModelInfo, ModelProvider, RunEvent, SessionDetail, SessionRecord, TurnFiles, TurnRecord } from 'protocol';
 
 /** サーバー API の呼び出し。失敗はレスポンス本文をメッセージにした Error で投げる */
 export const api = {
-  sessions: () => request<SessionRecord[]>('GET', '/sessions'),
+  graphs: () => request<GraphRecord[]>('GET', '/graphs'),
+  /** copyFrom のグラフを複製した新しいグラフを作る。省略すると既定の構成 */
+  createGraph: (copyFrom?: string) => request<GraphRecord>('POST', '/graphs', { copyFrom }),
+  updateGraph: (id: string, patch: { name?: string; definition?: GraphDefinition }) => request<GraphRecord>('PUT', `/graphs/${id}`, patch),
+  /** グラフを会話ごと消す */
+  deleteGraph: (id: string) => request<void>('DELETE', `/graphs/${id}`),
+
+  graphSessions: (graphId: string) => request<SessionRecord[]>('GET', `/graphs/${graphId}/sessions`),
+  /** グラフに属する空の会話を作る */
+  createSession: (graphId: string) => request<SessionRecord>('POST', `/graphs/${graphId}/sessions`),
   session: (id: string) => request<SessionDetail>('GET', `/sessions/${id}`),
-  /** copyFrom のセッションのグラフを写した新しいセッションを作る。省略すると既定のグラフ */
-  createSession: (copyFrom?: string) => request<SessionRecord>('POST', '/sessions', { copyFrom }),
-  updateSession: (id: string, patch: { graph?: GraphDefinition; activeTurnId?: string | null }) =>
-    request<SessionRecord>('PUT', `/sessions/${id}`, patch),
-  /** セッションを会話ごと消す */
+  updateSession: (id: string, patch: { activeTurnId: string | null }) => request<SessionRecord>('PUT', `/sessions/${id}`, patch),
   deleteSession: (id: string) => request<void>('DELETE', `/sessions/${id}`),
   createTurn: (sessionId: string, parentTurnId: string | null, userText: string) =>
     request<TurnRecord>('POST', `/sessions/${sessionId}/turns`, { parentTurnId, userText }),

@@ -2,14 +2,28 @@ import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlit
 import type { ModelMessage } from 'ai';
 import type { GraphDefinition, RunEvent, RunStatus, WorkfolderFiles } from 'protocol';
 
-/** 会話。次のターンで使うグラフと、表示中の分岐の末端ターンを持つ */
-export const sessions = sqliteTable('sessions', {
+/** エージェントの構成。編集すると、属する会話の次のターンから効く */
+export const graphs = sqliteTable('graphs', {
   id: text().primaryKey(),
-  title: text().notNull(),
-  graph: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
-  activeTurnId: text(),
+  name: text().notNull(),
+  definition: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
   createdAt: integer().notNull(),
 });
+
+/** グラフに属する会話。表示中の分岐の末端ターンを持つ */
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: text().primaryKey(),
+    graphId: text()
+      .notNull()
+      .references(() => graphs.id, { onDelete: 'cascade' }),
+    title: text().notNull(),
+    activeTurnId: text(),
+    createdAt: integer().notNull(),
+  },
+  (t) => [index('sessions_graph_idx').on(t.graphId)],
+);
 
 /**
  * ターンが終わった時点で会話に残っている状態の写し。次のターンは親ターンの写しから始める。
@@ -28,7 +42,7 @@ export const turns = sqliteTable(
       .references(() => sessions.id, { onDelete: 'cascade' }),
     parentTurnId: text(),
     userText: text().notNull(),
-    /** 実行時点のグラフの写し。セッションのグラフを後で編集しても変わらない */
+    /** 実行時点のグラフの写し。閲覧専用のログで、グラフを後で編集しても変わらない */
     graph: text({ mode: 'json' }).$type<GraphDefinition>().notNull(),
     status: text().$type<RunStatus>().notNull(),
     reply: text().notNull(),
