@@ -24,8 +24,9 @@ export type AgentOutcome = {
 };
 
 /**
- * エージェントに task を依頼する。LLM には記憶に続けて、会話履歴・添付ファイル・依頼を並べた今回のメッセージを渡し、
- * 記憶には依頼とそれへの応答だけを残す（会話履歴と添付ファイルは呼び出しのたびに今の内容で作り直す）。
+ * エージェントに task を依頼する。LLM には、前回までの経緯（history の設定で選んだ1つ）に続けて、
+ * 添付ファイルと依頼を並べた今回のメッセージを渡す。
+ * 経緯がこのエージェントの呼び出しなら、今回の依頼とそれへの応答を次回のために残す（添付ファイルは毎回その時点の中身で作り直す）。
  * LLM をツールコールのループが終わるまで進め、ステップ・テキスト・ツールのイベントを emit に流す。
  * LLM 呼び出しの失敗や Abort は例外にせず、結果の status として返す。
  */
@@ -36,10 +37,10 @@ export async function invokeAgent(
   tools: ToolSet,
   emit: (body: RunEventBody) => void,
 ): Promise<AgentOutcome> {
-  const memory = recallMemory(scope, node);
+  const pastCalls = pastCallsOf(scope, node);
   const message: ModelMessage = { role: 'user', content: currentMessageOf(scope, node, task) };
-  const loop = await runLoop(node, [...memory, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
-  storeMemory(scope, node, [...memory, { role: 'user', content: task }, ...loop.responseMessages]);
+  const loop = await runLoop(node, [...pastCalls, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
+  storeCalls(scope, node, [...pastCalls, { role: 'user', content: task }, ...loop.responseMessages]);
   return { status: loop.status, output: loop.error ?? loop.output, error: loop.error };
 }
 
@@ -52,26 +53,24 @@ export function agentTool(node: NodeOf<'agent'>, call: ToolCall): Tool {
   });
 }
 
-/** エージェントの過去の呼び出しでの依頼と応答。セッション継続の記憶は、親ターンから受け継いだ状態に入っている */
-function recallMemory(scope: RunScope, node: NodeOf<'agent'>): ModelMessage[] {
-  switch (node.config.memory) {
-    case 'fresh':
-      return [];
-    case 'turn':
+/** このエージェントのこれまでの呼び出しの依頼と応答。経緯にそれを選んでいなければ空。セッション分は親ターンから受け継いだ状態に入っている */
+function pastCallsOf(scope: RunScope, node: NodeOf<'agent'>): ModelMessage[] {
+  switch (node.config.history) {
+    case 'turnCalls':
       return scope.turnMemory.get(node.id) ?? [];
-    case 'session':
+    case 'sessionCalls':
       return scope.state.memories[node.id] ?? [];
+    default:
+      return [];
   }
 }
 
-function storeMemory(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMessage[]): void {
-  switch (node.config.memory) {
-    case 'fresh':
-      return;
-    case 'turn':
+function storeCalls(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMessage[]): void {
+  switch (node.config.history) {
+    case 'turnCalls':
       scope.turnMemory.set(node.id, messages);
       return;
-    case 'session':
+    case 'sessionCalls':
       scope.state.memories[node.id] = messages;
       scope.saveState();
       return;
@@ -79,11 +78,11 @@ function storeMemory(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMess
 }
 
 /**
- * 今回のメッセージの本文。会話履歴・添付ファイル・依頼をこの順にタグで囲んで並べる。
- * 会話履歴も添付ファイルも無ければ、依頼をそのまま本文にする
+ * 今回のメッセージの本文。経緯がユーザーとの会話ならそれを先頭に置き、添付ファイル・依頼の順にタグで囲んで並べる。
+ * 会話も添付ファイルも無ければ、依頼をそのまま本文にする
  */
 function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string): string {
-  const conversation = conversationOf(scope.conversation, node.config);
+  const conversation = pastConversationOf(scope.conversation, node.config);
   const workfolder = new Workfolder(scope.state.files, () => {});
   const sections = [
     ...(conversation.length > 0 ? [`<conversation>\n${conversation.map(transcriptLineOf).join('\n')}\n</conversation>`] : []),
@@ -94,15 +93,15 @@ function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string):
   return sections.length > 0 ? [...sections, `<task>\n${task}\n</task>`].join('\n\n') : task;
 }
 
-/** ユーザーとの会話のうち、history の設定で今回のメッセージに入れる分 */
-function conversationOf(conversation: ModelMessage[], config: NodeOf<'agent'>['config']): ModelMessage[] {
+/** 前のターンまでのユーザーとの会話のうち、経緯として入れる分。経緯にそれを選んでいなければ空 */
+function pastConversationOf(conversation: ModelMessage[], config: NodeOf<'agent'>['config']): ModelMessage[] {
   switch (config.history) {
-    case 'none':
-      return [];
-    case 'recent':
+    case 'recentConversation':
       return conversation.slice(-config.historyLength);
-    case 'all':
+    case 'conversation':
       return conversation;
+    default:
+      return [];
   }
 }
 

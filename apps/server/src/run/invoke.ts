@@ -14,9 +14,9 @@ export type RunScope = {
   /** 会話に残る状態。書き換えたら saveState を呼ぶ */
   state: TurnState;
   saveState(): void;
-  /** ユーザーとの会話。前のターンまでの発言と返答に、今回の発言を加えたもの */
+  /** ユーザーとの会話のうち、前のターンまでの発言と返答 */
   conversation: ModelMessage[];
-  /** ターン内でだけ持ち越す、エージェントノードの id ごとの記憶 */
+  /** ターン内でだけ持ち越す、エージェントノードの id ごとの呼び出しの依頼と応答 */
   turnMemory: Map<string, ModelMessage[]>;
   emit(header: CallHeader, body: RunEventBody): void;
 };

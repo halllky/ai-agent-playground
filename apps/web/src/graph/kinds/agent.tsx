@@ -2,7 +2,6 @@ import { useId } from 'react';
 import {
   defaultModelOf,
   historyModes,
-  memoryModes,
   modelProviderLabels,
   modelProviders,
   pathInFolder,
@@ -39,10 +38,9 @@ export const agentView: NodeKindView<'agent'> = {
 
         <SectionHeading>LLM への入力</SectionHeading>
         <TextField label="① システムプロンプト" multiline value={config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt })} />
-        <SelectField label="② 前回までの依頼と応答" value={config.memory} options={memoryOptions} onChange={(memory) => set({ memory })} />
+        <HistoryField config={config} onChange={set} />
         <div className="mb-2 text-xs text-muted">③ 今回のメッセージ</div>
         <div className="mb-2 border-l-2 pl-2">
-          <ConversationField config={config} onChange={set} />
           <AttachmentsField graph={graph} paths={config.attachments} onChange={(attachments) => set({ attachments })} />
           <RequestSources graph={graph} agentId={node.id} />
         </div>
@@ -54,12 +52,12 @@ export const agentView: NodeKindView<'agent'> = {
   },
 };
 
-/** ユーザーとの会話をどこまで入れるか。直近なら発言数をその横で選ぶ */
-function ConversationField(props: { config: AgentConfig; onChange: (changed: Partial<AgentConfig>) => void }) {
+/** 前回までの経緯として何を入れるか。直近の会話なら発言数をその横で選ぶ */
+function HistoryField(props: { config: AgentConfig; onChange: (changed: Partial<AgentConfig>) => void }) {
   const { config, onChange } = props;
   return (
     <label className="mb-2 flex flex-col gap-0.5">
-      <span className="text-xs text-muted">ユーザーとの会話</span>
+      <span className="text-xs text-muted">② 前回までの経緯</span>
       <span className="flex items-center gap-1">
         <select className="min-w-0 flex-1" value={config.history} onChange={(e) => onChange({ history: e.target.value as AgentConfig['history'] })}>
           {historyOptions.map((o) => (
@@ -68,7 +66,7 @@ function ConversationField(props: { config: AgentConfig; onChange: (changed: Par
             </option>
           ))}
         </select>
-        {config.history === 'recent' && (
+        {config.history === 'recentConversation' && (
           <>
             <input
               className="w-14"
@@ -142,14 +140,18 @@ function AttachmentsField(props: { graph: GraphDefinition; paths: string[]; onCh
   );
 }
 
-const memoryLabels: Record<AgentConfig['memory'], string> = { fresh: '含めない', turn: 'このターンの分', session: 'このセッションの分' };
-const historyLabels: Record<AgentConfig['history'], string> = { none: '含めない', recent: '直近', all: 'すべて' };
+const historyLabels: Record<AgentConfig['history'], string> = {
+  none: '含めない',
+  recentConversation: 'ユーザーとの会話（直近）',
+  conversation: 'ユーザーとの会話（すべて）',
+  turnCalls: 'このエージェントへの依頼と応答（このターン）',
+  sessionCalls: 'このエージェントへの依頼と応答（このセッション）',
+};
 const returnLabels: Record<AgentConfig['returns'], string> = {
   finalText: '最後の応答文',
   allSteps: '全ステップ（JSON）',
   none: 'なし（作業だけして終わる）',
 };
-const memoryOptions = memoryModes.map((value) => ({ value, label: memoryLabels[value] }));
 const historyOptions = historyModes.map((value) => ({ value, label: historyLabels[value] }));
 const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));
 const providerOptions = modelProviders.map((value) => ({ value, label: modelProviderLabels[value] }));

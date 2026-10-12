@@ -4,7 +4,7 @@ import type { EdgeKind, EdgeOf, GraphDefinition, GraphNode, NodeKind, NodeOf } f
 /** 新規セッションのグラフ。ユーザーの発言をエージェント1つが受けて返す */
 export function createDefaultGraph(): GraphDefinition {
   const agent = createNode('agent', 'assistant', { x: 0, y: 150 });
-  agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', memory: 'session' };
+  agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', history: 'sessionCalls' };
   return {
     nodes: [createNode('user', 'user', { x: 0, y: 0 }), agent],
     edges: [createEdge('flow', 'user-assistant', 'user', 'assistant'), createEdge('flow', 'assistant-user', 'assistant', 'user')],
@@ -38,7 +38,6 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
       history: 'none',
       historyLength: 2,
       attachments: [],
-      memory: 'fresh',
       returns: 'finalText',
     },
   }),

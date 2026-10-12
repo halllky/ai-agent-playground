@@ -176,7 +176,7 @@ describe('ターン実行', () => {
       seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => textOf(m.content)));
       return streamOf(textParts('覚えました'));
     });
-    const graph = graphOf({ memory: 'session' });
+    const graph = graphOf({ history: 'sessionCalls' });
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -359,7 +359,7 @@ describe('ターン実行', () => {
     expect(turnFiles(events[0].turnId)?.files).toEqual({ 'drafts/b.md': 'y', 'other/c.md': 'z' });
   });
 
-  it('今回のメッセージには直近の会話・添付ファイル・依頼を並べ、記憶には依頼と応答だけを残す', async () => {
+  it('経緯がユーザーとの会話なら、前のターンまでの直近の発言を今回のメッセージの先頭に、添付ファイル・依頼と並べる', async () => {
     const prompts: string[][] = [];
     scripts.set('main', (prompt) => {
       prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
@@ -367,38 +367,58 @@ describe('ターン実行', () => {
     });
     const graph = graphWithMain();
     const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
-    main.config = { ...main.config, history: 'recent', historyLength: 2, attachments: ['notes/概要.md', 'notes/無い.md'] };
+    main.config = { ...main.config, history: 'recentConversation', historyLength: 2, attachments: ['notes/概要.md', 'notes/無い.md'] };
     graph.nodes.push(folderOf('notes', 'notes', [{ path: '概要.md', content: '# 概要' }]));
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+    const second = await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+    await runTurn(graph, '三つ目', undefined, { sessionId, parentTurnId: second[0].turnId });
+
+    expect(prompts[2]).toEqual([
+      [
+        '<conversation>\n[user] 二つ目\n[assistant] 返事2\n</conversation>',
+        '<file path="notes/概要.md">\n# 概要\n</file>',
+        '<file path="notes/無い.md" missing="true" />',
+        '<task>\n三つ目\n</task>',
+      ].join('\n\n'),
+    ]);
+  });
+
+  it('経緯がこのエージェントの呼び出しなら、前回までの依頼と応答だけを残し、添付ファイルは毎回その時点の中身にする', async () => {
+    const prompts: string[][] = [];
+    scripts.set('main', (prompt) => {
+      prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
+      return streamOf(textParts(`返事${prompts.length}`));
+    });
+    const graph = graphWithMain();
+    const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
+    main.config = { ...main.config, history: 'sessionCalls', attachments: ['概要.md'] };
+    graph.nodes.push(folderOf('root', '', [{ path: '概要.md', content: '# 概要' }]));
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
     await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
 
-    expect(prompts[1]).toEqual([
-      '一つ目',
-      '返事1',
-      [
-        '<conversation>\n[assistant] 返事1\n[user] 二つ目\n</conversation>',
-        '<file path="notes/概要.md">\n# 概要\n</file>',
-        '<file path="notes/無い.md" missing="true" />',
-        '<task>\n二つ目\n</task>',
-      ].join('\n\n'),
-    ]);
+    expect(prompts[1]).toEqual(['一つ目', '返事1', '<file path="概要.md">\n# 概要\n</file>\n\n<task>\n二つ目\n</task>']);
   });
 
-  it('ツールとして呼ばれたエージェントの会話履歴は、呼び出し元の会話ではなくユーザーとの会話', async () => {
-    let subPrompt = '';
+  it('ツールとして呼ばれたエージェントの経緯の会話は、呼び出し元のやりとりではなくユーザーとの会話', async () => {
+    const subPrompts: string[] = [];
     scripts.set('main', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: '調べて' } }])),
     );
     scripts.set('sub', (prompt) => {
-      subPrompt = userTextOf(prompt);
+      subPrompts.push(userTextOf(prompt));
       return streamOf(textParts('調べました'));
     });
+    const graph = graphOf({ history: 'conversation' });
+    const sessionId = createSession(graph);
 
-    await runTurn(graphOf({ history: 'all' }), '旅行の計画を立てたい');
+    const first = await runTurn(graph, '旅行の計画を立てたい', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '京都にしたい', undefined, { sessionId, parentTurnId: first[0].turnId });
 
-    expect(subPrompt).toBe('<conversation>\n[user] 旅行の計画を立てたい\n</conversation>\n\n<task>\n調べて\n</task>');
+    expect(subPrompts).toEqual(['調べて', '<conversation>\n[user] 旅行の計画を立てたい\n[assistant] ok\n</conversation>\n\n<task>\n調べて\n</task>']);
   });
 
   it('返すものが「なし」なら、終了用のツールで応答を待たずに終え、後段には順序だけを伝える', async () => {
@@ -518,7 +538,7 @@ describe('ターン実行', () => {
 /** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ */
 function graphWithMain(): GraphDefinition {
   return {
-    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agentOf('main', { model: 'main', memory: 'session' })],
+    nodes: [createNode('user', 'user', { x: 0, y: 0 }), agentOf('main', { model: 'main', history: 'sessionCalls' })],
     edges: [flowEdge('user', 'main'), flowEdge('main', 'user')],
     settings: { maxCallDepth: 5 },
   };
@@ -532,7 +552,7 @@ function graphOf(researcher: Partial<NodeOf<'agent'>['config']>): GraphDefinitio
   return graph;
 }
 
-/** id をツール名にもするエージェント。指定がなければ会話履歴なし・記憶なしで最終テキストを返す */
+/** id をツール名にもするエージェント。指定がなければ経緯なしで、最終テキストを返す */
 function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf<'agent'> {
   const node = createNode('agent', id, { x: 0, y: 0 });
   node.config = { ...node.config, name: id, maxSteps: 5, ...config };

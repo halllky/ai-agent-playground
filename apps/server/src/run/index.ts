@@ -98,7 +98,7 @@ class Run implements RunScope {
   constructor(private readonly turn: typeof turns.$inferSelect) {
     this.graph = turn.graph;
     this.state = turn.state;
-    this.conversation = [...conversationBefore(turn.parentTurnId), { role: 'user', content: turn.userText }];
+    this.conversation = conversationBefore(turn.parentTurnId);
     this.signal = this.controller.signal;
   }
 

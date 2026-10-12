@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { modelProviders } from '../model.ts';
 
-/** エージェントの今回のメッセージに、ユーザーとの会話をどこまで入れるか。recent なら直近 historyLength 発言 */
-export const historyModes = ['none', 'recent', 'all'] as const;
+/**
+ * エージェントに、この呼び出しより前の経緯として何を渡すか。1つだけを選ぶので、同じ発言が二重に入ることはない。
+ * - recentConversation / conversation: ユーザーとの会話のうち、前のターンまでの直近 historyLength 発言 / すべて
+ * - turnCalls / sessionCalls: このエージェントの、このターン / この会話でのこれまでの呼び出しの依頼と応答（ツールコールを含む）
+ */
+export const historyModes = ['none', 'recentConversation', 'conversation', 'turnCalls', 'sessionCalls'] as const;
 /** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる */
 export const returnModes = ['finalText', 'allSteps', 'none'] as const;
-/** エージェント自身の過去の呼び出し（依頼と応答）をどこまで持ち越すか */
-export const memoryModes = ['fresh', 'turn', 'session'] as const;
 /** フォルダへのアクセス権限。write は read を含む */
 export const accessPermissions = ['read', 'write'] as const;
 /** フォルダへのアクセス権限 */
@@ -69,8 +71,8 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     position: positionSchema,
   }),
   /**
-   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・記憶・今回のメッセージの順に渡す。
-   * 今回のメッセージは、ユーザーとの会話（history）・添付ファイル（attachments）・依頼をこの順に並べたもの。
+   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・前回までの経緯（history）・今回のメッセージの順に渡す。
+   * 今回のメッセージは、添付ファイル（attachments）と依頼を並べたもの。
    * 依頼は、フローから呼ばれたときは流れてきた入力、ツールとして呼ばれたときは呼び出し元が書いた引数
    */
   z.object({
@@ -86,12 +88,10 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
       systemPrompt: z.string(),
       maxSteps: z.number().int().positive(),
       history: z.enum(historyModes),
-      /** history が recent のときに入れる、直近の発言の数 */
+      /** history が recentConversation のときに入れる、直近の発言の数 */
       historyLength: z.number().int().positive(),
       /** 呼び出しのたびに今の中身を入れる、ワークフォルダのファイルのパス */
       attachments: z.array(z.string()),
-      /** 記憶に残すのは依頼と、それへの応答（ツールコールを含む）だけで、会話や添付ファイルは残さない */
-      memory: z.enum(memoryModes),
       returns: z.enum(returnModes),
     }),
   }),

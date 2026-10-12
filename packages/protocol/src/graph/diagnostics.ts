@@ -87,14 +87,10 @@ function configWarnings(node: GraphNode): string[] {
 const toolNameMessage = 'ツール名は半角英数字・_・- の64文字以内にしてください';
 
 function agentConfigWarnings(config: NodeOf<'agent'>['config']): string[] {
-  const messages = config.attachments.flatMap((path) => {
+  return config.attachments.flatMap((path) => {
     const error = filePathError(path);
     return error ? [`ワークフォルダのファイル: ${error}`] : [];
   });
-  if (config.memory === 'session' && config.history !== 'none') {
-    messages.push('「前回までの依頼と応答」を「このセッションの分」にしているので、「ユーザーとの会話」も含めると、これまでの発言が二重に入ります');
-  }
-  return messages;
 }
 
 /** 同じパスのフォルダや、複数のフォルダが同じパスに写す初期ファイル */
