@@ -9,7 +9,7 @@ import {
   fileToolName,
   isInScope,
   scopeLabel,
-  type AccessPermission,
+  type FilePermission,
   type FileOperation,
   type GraphDefinition,
   type NodeOf,
@@ -102,7 +102,7 @@ export function workfolderTools(graph: GraphDefinition, agent: NodeOf<'agent'>, 
   const access = agentAccess(graph, agent);
   if (access.length === 0) return {};
   const scoped = new ScopedWorkfolder(access, workfolder);
-  const permission: AccessPermission = access.some((a) => a.permission === 'write') ? 'write' : 'read';
+  const permission: FilePermission = access.some((a) => a.permission === 'write') ? 'write' : 'read';
   const guide = { summary: scopeSummaryOf(access), descriptions: descriptionsOf(graph.nodes.find((n) => n.kind === 'workfolder'), access) };
   const tools: ToolSet = {};
   for (const operation of fileOperationsFor(permission)) {
@@ -147,7 +147,7 @@ class ScopedWorkfolder {
     this.workfolder.patchJson(path, operations);
   }
 
-  private require(path: string, needed: AccessPermission): void {
+  private require(path: string, needed: FilePermission): void {
     const permission = this.permissionFor(path);
     if (permission === 'write' || permission === needed) return;
     const verb = needed === 'write' ? '編集' : '参照';
@@ -155,7 +155,7 @@ class ScopedWorkfolder {
     throw new FileError(`${path} を${verb}する権限がありません。${verb}できる範囲: ${allowed.join(', ')}`);
   }
 
-  private permissionFor(path: string): AccessPermission | null {
+  private permissionFor(path: string): FilePermission | null {
     const permissions = this.access.filter((a) => isInScope(path, a.scope)).map((a) => a.permission);
     return permissions.includes('write') ? 'write' : permissions.includes('read') ? 'read' : null;
   }

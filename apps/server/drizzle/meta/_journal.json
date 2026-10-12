@@ -36,6 +36,13 @@
       "when": 1791787749729,
       "tag": "0004_single_workfolder",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791812719804,
+      "tag": "0005_edge_handoff",
+      "breakpoints": true
     }
   ]
 }

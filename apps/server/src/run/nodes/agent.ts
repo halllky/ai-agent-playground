@@ -11,22 +11,39 @@ import {
   type ToolSet,
 } from 'ai';
 import { z } from 'zod';
-import { finishToolName, type NodeOf, type RunEventBody, type RunStatus, type StepRecord } from 'protocol';
+import {
+  agentAttachments,
+  finishToolName,
+  isInScope,
+  type CallMemoryMode,
+  type NodeOf,
+  type RunEventBody,
+  type RunStatus,
+  type StepRecord,
+  type WorkfolderScope,
+} from 'protocol';
 import { languageModel, stepCost } from '../../llm/index.ts';
 import type { RunScope, ToolCall } from '../invoke.ts';
 import { Workfolder } from './files.ts';
 
-/** エージェントの呼び出し1回分の結果。失敗したら output はその理由。返すものが「なし」なら成功時の output は null */
+/**
+ * エージェントの呼び出し1回分の結果。output は最後の応答文、stepsOutput は全ステップの JSON。
+ * 失敗したらどちらもその理由。作業だけして終わるエージェントが成功したらどちらも null
+ */
 export type AgentOutcome = {
   status: Exclude<RunStatus, 'running'>;
   output: string | null;
+  stepsOutput: string | null;
   error: string | null;
 };
 
+/** 呼び出し元とのこれまでの依頼と応答の記憶。key ごとに分けて持つ */
+export type CallMemory = { mode: CallMemoryMode; key: string };
+
 /**
- * エージェントに task を依頼する。LLM には、前回までの経緯（history の設定で選んだ1つ）に続けて、
- * 添付ファイルと依頼を並べた今回のメッセージを渡す。
- * 経緯がこのエージェントの呼び出しなら、今回の依頼とそれへの応答を次回のために残す（添付ファイルは毎回その時点の中身で作り直す）。
+ * エージェントに task を依頼する。LLM には、memory に残っている呼び出し元とのこれまでの依頼と応答に続けて、
+ * ユーザーとの会話・プロンプトに含めるファイル・依頼を並べた今回のメッセージを渡す。
+ * memory を持つなら、今回の依頼とそれへの応答を次回のために残す（会話とファイルは毎回その時点の中身で作り直す）。
  * LLM をツールコールのループが終わるまで進め、ステップ・テキスト・ツールのイベントを emit に流す。
  * LLM 呼び出しの失敗や Abort は例外にせず、結果の status として返す。
  */
@@ -34,75 +51,86 @@ export async function invokeAgent(
   scope: RunScope,
   node: NodeOf<'agent'>,
   task: string,
+  memory: CallMemory,
   tools: ToolSet,
   emit: (body: RunEventBody) => void,
 ): Promise<AgentOutcome> {
-  const pastCalls = pastCallsOf(scope, node);
+  const pastCalls = pastCallsOf(scope, memory);
   const message: ModelMessage = { role: 'user', content: currentMessageOf(scope, node, task) };
   const loop = await runLoop(node, [...pastCalls, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
-  storeCalls(scope, node, [...pastCalls, { role: 'user', content: task }, ...loop.responseMessages]);
-  return { status: loop.status, output: loop.error ?? loop.output, error: loop.error };
+  storeCalls(scope, memory, [...pastCalls, { role: 'user', content: task }, ...loop.responseMessages]);
+  if (loop.error) return { status: loop.status, output: loop.error, stepsOutput: loop.error, error: loop.error };
+  return { status: loop.status, output: loop.output, stepsOutput: loop.stepsOutput, error: null };
 }
 
-/** エージェントを、別のエージェントが呼び出すツールにする。返すものが「なし」なら、終わったことだけを返す */
-export function agentTool(node: NodeOf<'agent'>, call: ToolCall): Tool {
+/** エージェントを、別のエージェントが呼び出すツールにする。何も返ってこなければ（作業だけして終わるなら）、終わったことだけを返す */
+export function agentTool(description: string, call: ToolCall): Tool {
   return tool({
-    description: node.config.description,
+    description,
     inputSchema: z.object({ task: z.string().describe('エージェントに依頼する内容') }),
     execute: async ({ task }, options) => (await call(task, options)) ?? '完了しました（このエージェントは結果を返しません）',
   });
 }
 
-/** このエージェントのこれまでの呼び出しの依頼と応答。経緯にそれを選んでいなければ空。セッション分は親ターンから受け継いだ状態に入っている */
-function pastCallsOf(scope: RunScope, node: NodeOf<'agent'>): ModelMessage[] {
-  switch (node.config.history) {
-    case 'turnCalls':
-      return scope.turnMemory.get(node.id) ?? [];
-    case 'sessionCalls':
-      return scope.state.memories[node.id] ?? [];
-    default:
+/** memory に残っている、これまでの依頼と応答。記憶を持たなければ空。セッション分は親ターンから受け継いだ状態に入っている */
+function pastCallsOf(scope: RunScope, memory: CallMemory): ModelMessage[] {
+  switch (memory.mode) {
+    case 'turn':
+      return scope.turnMemory.get(memory.key) ?? [];
+    case 'session':
+      return scope.state.memories[memory.key] ?? [];
+    case 'none':
       return [];
   }
 }
 
-function storeCalls(scope: RunScope, node: NodeOf<'agent'>, messages: ModelMessage[]): void {
-  switch (node.config.history) {
-    case 'turnCalls':
-      scope.turnMemory.set(node.id, messages);
+function storeCalls(scope: RunScope, memory: CallMemory, messages: ModelMessage[]): void {
+  switch (memory.mode) {
+    case 'turn':
+      scope.turnMemory.set(memory.key, messages);
       return;
-    case 'sessionCalls':
-      scope.state.memories[node.id] = messages;
+    case 'session':
+      scope.state.memories[memory.key] = messages;
       scope.saveState();
       return;
   }
 }
 
 /**
- * 今回のメッセージの本文。経緯がユーザーとの会話ならそれを先頭に置き、添付ファイル・依頼の順にタグで囲んで並べる。
- * 会話も添付ファイルも無ければ、依頼をそのまま本文にする
+ * 今回のメッセージの本文。ユーザーとの会話・プロンプトに含めるファイル・依頼の順にタグで囲んで並べる。
+ * 会話もファイルも無ければ、依頼をそのまま本文にする
  */
 function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string): string {
   const conversation = pastConversationOf(scope.conversation, node.config);
   const workfolder = new Workfolder(scope.state.files, () => {});
   const sections = [
     ...(conversation.length > 0 ? [`<conversation>\n${conversation.map(transcriptLineOf).join('\n')}\n</conversation>`] : []),
-    ...node.config.attachments.map((path) =>
+    ...attachedPathsOf(agentAttachments(scope.graph, node), workfolder).map((path) =>
       workfolder.has(path) ? `<file path="${path}">\n${workfolder.read(path)}\n</file>` : `<file path="${path}" missing="true" />`,
     ),
   ];
   return sections.length > 0 ? [...sections, `<task>\n${task}\n</task>`].join('\n\n') : task;
 }
 
-/** 前のターンまでのユーザーとの会話のうち、経緯として入れる分。経緯にそれを選んでいなければ空 */
+/** 前のターンまでのユーザーとの会話のうち、今回のメッセージに入れる分 */
 function pastConversationOf(conversation: ModelMessage[], config: NodeOf<'agent'>['config']): ModelMessage[] {
-  switch (config.history) {
-    case 'recentConversation':
-      return conversation.slice(-config.historyLength);
-    case 'conversation':
+  switch (config.conversation) {
+    case 'recent':
+      return conversation.slice(-config.conversationLength);
+    case 'all':
       return conversation;
-    default:
+    case 'none':
       return [];
   }
+}
+
+/**
+ * プロンプトに含める範囲にある、ファイルのパス。重なる範囲のパスは最初の1回だけ並べる。
+ * ファイルの範囲は今は無くてもそのパスを並べ（無いことを伝えるため）、フォルダの範囲はその時点でその中にあるファイルを並べる
+ */
+function attachedPathsOf(scopes: WorkfolderScope[], workfolder: Workfolder): string[] {
+  const paths = scopes.flatMap((scope) => (scope.isFolder ? workfolder.list().filter((path) => isInScope(path, scope)) : [scope.path]));
+  return [...new Set(paths)];
 }
 
 /** ユーザーとの会話の発言1つ。発言と返答はどちらも文字列で持っている */
@@ -111,11 +139,11 @@ function transcriptLineOf(message: ModelMessage): string {
 }
 
 /**
- * 返すものが「なし」のエージェントが持つ、作業を終えるためのツール。
+ * 作業だけして終わるエージェントが持つ、作業を終えるためのツール。
  * 呼んだステップのほかのツールがすべて成功していれば、応答の文章を待たずにループを止める（stopConditionsOf）
  */
 function finishToolOf(node: NodeOf<'agent'>): ToolSet {
-  if (node.config.returns !== 'none') return {};
+  if (!node.config.workOnly) return {};
   return {
     [finishToolName]: tool({
       description:
@@ -129,7 +157,7 @@ function finishToolOf(node: NodeOf<'agent'>): ToolSet {
 
 function stopConditionsOf(node: NodeOf<'agent'>): StopCondition<ToolSet>[] {
   const conditions = [stepCountIs(node.config.maxSteps)];
-  if (node.config.returns === 'none') conditions.push(finishedCleanly);
+  if (node.config.workOnly) conditions.push(finishedCleanly);
   return conditions;
 }
 
@@ -139,10 +167,13 @@ const finishedCleanly: StopCondition<ToolSet> = ({ steps }) => {
   return !!last && last.toolCalls.some((c) => c.toolName === finishToolName) && !last.content.some((p) => p.type === 'tool-error');
 };
 
-/** LLM のループ1回分の結果。responseMessages はこの呼び出しで新たに生成されたメッセージで、Abort 時は途中までのテキストを含む */
+/**
+ * LLM のループ1回分の結果。output / stepsOutput は失敗しても途中までの出力のまま。
+ * responseMessages はこの呼び出しで新たに生成されたメッセージで、Abort 時は途中までのテキストを含む
+ */
 type LoopResult = AgentOutcome & { responseMessages: ModelMessage[] };
 
-/** LLM を、ツールコールのループが終わるまで進める。output はノードの returns 設定に従って呼び出し元へ返すもの */
+/** LLM を、ツールコールのループが終わるまで進める */
 async function runLoop(
   node: NodeOf<'agent'>,
   messages: ModelMessage[],
@@ -218,28 +249,21 @@ async function runLoop(
 
   return {
     status: aborted ? 'aborted' : error ? 'error' : 'done',
-    output: outputOf(node, steps, partialText),
+    ...(node.config.workOnly ? { output: null, stepsOutput: null } : outputsOf(steps, partialText)),
     responseMessages,
     error,
   };
 }
 
-function outputOf(node: NodeOf<'agent'>, steps: StepResult<ToolSet>[], partialText: string): string | null {
-  switch (node.config.returns) {
-    case 'none':
-      return null;
-    case 'allSteps': {
-      const summaries = steps.map((s) => ({
-        text: s.text,
-        toolCalls: s.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input })),
-        toolResults: s.toolResults.map((r) => ({ toolName: r.toolName, output: r.output })),
-      }));
-      if (partialText) summaries.push({ text: partialText, toolCalls: [], toolResults: [] });
-      return JSON.stringify(summaries, null, 2);
-    }
-    case 'finalText':
-      return partialText || steps.at(-1)?.text || '';
-  }
+/** 最後の応答文と、全ステップの JSON。Abort で打ち切られたステップは途中までのテキストで補う */
+function outputsOf(steps: StepResult<ToolSet>[], partialText: string): { output: string; stepsOutput: string } {
+  const summaries = steps.map((s) => ({
+    text: s.text,
+    toolCalls: s.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input })),
+    toolResults: s.toolResults.map((r) => ({ toolName: r.toolName, output: r.output })),
+  }));
+  if (partialText) summaries.push({ text: partialText, toolCalls: [], toolResults: [] });
+  return { output: partialText || steps.at(-1)?.text || '', stepsOutput: JSON.stringify(summaries, null, 2) };
 }
 
 async function stepRecordOf(node: NodeOf<'agent'>, step: StepResult<ToolSet>, durationMs: number): Promise<StepRecord> {

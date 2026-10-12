@@ -1,4 +1,13 @@
-import { isInvocable, type EdgeKind, type GraphDefinition, type GraphNode, type InvocableNode, type NodeKind } from './schema.ts';
+import {
+  isInvocable,
+  type CallMemoryMode,
+  type EdgeKind,
+  type GraphDefinition,
+  type GraphEdge,
+  type GraphNode,
+  type InvocableNode,
+  type NodeKind,
+} from './schema.ts';
 
 /**
  * ノード種別ごとの、グラフ上での役割。接続できる組み合わせはすべてここから決まる。
@@ -69,6 +78,14 @@ export function flowOrder(graph: GraphDefinition): InvocableNode[] | null {
   return ordered.length === reachable.size ? ordered : null;
 }
 
+/**
+ * フローから nodeId のノードを呼ぶときの、依頼と応答の記憶。入ってくるフローエッジのどれかが session なら session。
+ * フローではノードは1ターンに1回しか呼ばれないので、turn は記憶なしと同じに扱う
+ */
+export function flowMemoryOf(graph: GraphDefinition, nodeId: string): Exclude<CallMemoryMode, 'turn'> {
+  return graph.edges.some((e) => e.kind === 'flow' && e.target === nodeId && e.memory === 'session') ? 'session' : 'none';
+}
+
 /** nodeIds のノードと、それらにつながるエッジを取り除いたグラフ */
 export function removeNodes(graph: GraphDefinition, nodeIds: Iterable<string>): GraphDefinition {
   const removed = new Set(nodeIds);
@@ -87,6 +104,11 @@ export function replaceNode(graph: GraphDefinition, node: GraphNode): GraphDefin
     nodes: graph.nodes.map((n) => (n.id === node.id ? node : n)),
     edges: graph.edges.filter((e) => !entryIds || e.kind !== 'access' || e.target !== node.id || e.entryId === null || entryIds.has(e.entryId)),
   };
+}
+
+/** edge と同じ id のエッジを edge に差し替えたグラフ */
+export function replaceEdge(graph: GraphDefinition, edge: GraphEdge): GraphDefinition {
+  return { ...graph, edges: graph.edges.map((e) => (e.id === edge.id ? edge : e)) };
 }
 
 /** edgeIds のエッジを取り除いたグラフ */

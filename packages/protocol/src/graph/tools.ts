@@ -1,4 +1,4 @@
-import { isInvocable, type AccessPermission, type GraphDefinition, type NodeOf } from './schema.ts';
+import { isInvocable, type FilePermission, type GraphDefinition, type NodeOf } from './schema.ts';
 import { agentAccess } from './workfolder.ts';
 
 /** ツール名として各プロバイダが受け付ける文字種 */
@@ -7,11 +7,11 @@ export const toolNamePattern = /^[A-Za-z0-9_-]{1,64}$/;
 /** ワークフォルダに対する操作。1つの操作が1つのツールになる */
 export type FileOperation = 'list' | 'read' | 'write' | 'delete' | 'edit_markdown' | 'patch_json';
 
-/** 返すものが「なし」のエージェントが持つ、作業を終えるためのツールの名前 */
+/** 作業だけして終わるエージェントが持つ、作業を終えるためのツールの名前 */
 export const finishToolName = 'finish';
 
 /** 権限で許される操作 */
-export function fileOperationsFor(permission: AccessPermission): FileOperation[] {
+export function fileOperationsFor(permission: FilePermission): FileOperation[] {
   return permission === 'write' ? ['list', 'read', 'write', 'delete', 'edit_markdown', 'patch_json'] : ['list', 'read'];
 }
 
@@ -22,7 +22,7 @@ export function fileToolName(operation: FileOperation): string {
 
 /**
  * エージェントが持つツールの名前。ツールエッジの送り先ごとの名前に加え、
- * アクセスエッジがあれば最も強い権限のワークフォルダのツール、返すものが「なし」なら終了用のツール。
+ * ファイルを操作できるアクセスエッジがあれば最も強い権限のワークフォルダのツール、作業だけして終わるなら終了用のツール。
  * 同じ名前が複数あればそのまま重複して並ぶ（ワークフォルダのツールは1組にまとめる）
  */
 export function agentToolNames(graph: GraphDefinition, agent: NodeOf<'agent'>): string[] {
@@ -34,6 +34,6 @@ export function agentToolNames(graph: GraphDefinition, agent: NodeOf<'agent'>): 
   }
   const permissions = agentAccess(graph, agent).map((a) => a.permission);
   if (permissions.length > 0) names.push(...fileOperationsFor(permissions.includes('write') ? 'write' : 'read').map(fileToolName));
-  if (agent.config.returns === 'none') names.push(finishToolName);
+  if (agent.config.workOnly) names.push(finishToolName);
   return names;
 }

@@ -41,20 +41,20 @@ export function meetsCondition(node: NodeOf<'judge'>, verdict: Verdict, conditio
   return condition.anyOf.includes(decidedValueOf(answer));
 }
 
-/** 判定ノードを、エージェントが呼び出すツールにする */
-export function judgeTool(node: NodeOf<'judge'>, call: ToolCall): Tool {
+/** 判定ノードを、エージェントが呼び出すツールにする。description が空なら既定の説明を使う。どちらにも質問の一覧を添える */
+export function judgeTool(node: NodeOf<'judge'>, description: string, call: ToolCall): Tool {
   return tool({
-    description: toolDescriptionOf(node),
+    description: toolDescriptionOf(node, description),
     inputSchema: z.object({ state: z.string().describe('判定してほしい内容。文章か JSON') }),
     execute: ({ state }, options) => call(state, options),
   });
 }
 
 /** 質問文はツールの説明に載せ、回答には含めない（会話履歴に毎回積まれてノイズになるため） */
-function toolDescriptionOf(node: NodeOf<'judge'>): string {
+function toolDescriptionOf(node: NodeOf<'judge'>, description: string): string {
   const questions = node.config.questions.map((q) => `- ${q.key}（${judgeQuestionTypeLabels[q.type]}）: ${q.instructions}`);
   return [
-    node.config.description || '渡した state について、あらかじめ決められた質問に確率付きで答える',
+    description || '渡した state について、あらかじめ決められた質問に確率付きで答える',
     '',
     '質問（回答は質問の名前をキーにした JSON で返る）:',
     ...questions,

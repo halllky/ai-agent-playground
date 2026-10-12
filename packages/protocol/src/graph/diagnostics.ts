@@ -1,5 +1,5 @@
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from '../model.ts';
-import { canConnect, flowOrder } from './connections.ts';
+import { canConnect, flowMemoryOf, flowOrder } from './connections.ts';
 import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion, type NodeOf, type WorkfolderEntry } from './schema.ts';
 import { agentToolNames, toolNamePattern } from './tools.ts';
 import { entryNameError, entryPath, filePathError, scopeOf } from './workfolder.ts';
@@ -46,6 +46,9 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
       warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルにツールが付いています' });
     }
     warnings.push(...duplicateToolNameWarnings(toolNames).map((message) => ({ target: { nodeId: node.id }, message })));
+    if (hasDuplicatedConversation(graph, node)) {
+      warnings.push({ target: { nodeId: node.id }, message: 'ユーザーとの会話と、ユーザー入力からの依頼と応答の両方に、同じ発言が入ります' });
+    }
   }
 
   for (const edge of graph.edges) {
@@ -55,8 +58,9 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
       warnings.push({ target: { edgeId: edge.id }, message: 'このノード同士は接続できません' });
     } else if (edge.kind === 'flow') {
       warnings.push(...flowConditionWarnings(edge, source).map((message) => ({ target: { edgeId: edge.id }, message })));
-    } else if (edge.kind === 'access' && target.kind === 'workfolder' && !scopeOf(target, edge.entryId)) {
-      warnings.push({ target: { edgeId: edge.id }, message: '権限を与えるファイル・フォルダがワークフォルダにありません' });
+      if (edge.memory === 'turn') warnings.push({ target: { edgeId: edge.id }, message: 'フローでは「このターンの分」の依頼と応答は使われません' });
+    } else if (edge.kind === 'access') {
+      warnings.push(...accessWarnings(edge, target).map((message) => ({ target: { edgeId: edge.id }, message })));
     }
   }
 
@@ -70,7 +74,6 @@ function configWarnings(node: GraphNode): string[] {
     case 'userOutput':
       return [];
     case 'agent':
-      return [...(toolNamePattern.test(node.config.name) ? [] : [toolNameMessage]), ...agentConfigWarnings(node.config)];
     case 'webSearch':
       return toolNamePattern.test(node.config.name) ? [] : [toolNameMessage];
     case 'judge':
@@ -82,11 +85,18 @@ function configWarnings(node: GraphNode): string[] {
 
 const toolNameMessage = 'ツール名は半角英数字・_・- の64文字以内にしてください';
 
-function agentConfigWarnings(config: NodeOf<'agent'>['config']): string[] {
-  return config.attachments.flatMap((path) => {
-    const error = filePathError(path);
-    return error ? [`ワークフォルダのファイル: ${error}`] : [];
-  });
+/** ユーザー入力から直接流れてくる依頼と応答を覚えたうえで、ユーザーとの会話も含めるため、同じ発言が二重に入るか */
+function hasDuplicatedConversation(graph: GraphDefinition, agent: NodeOf<'agent'>): boolean {
+  if (agent.config.conversation === 'none' || flowMemoryOf(graph, agent.id) !== 'session') return false;
+  const inputIds = new Set(graph.nodes.filter((n) => n.kind === 'userInput').map((n) => n.id));
+  return graph.edges.some((e) => e.kind === 'flow' && e.target === agent.id && inputIds.has(e.source));
+}
+
+function accessWarnings(edge: EdgeOf<'access'>, target: GraphNode): string[] {
+  if (target.kind !== 'workfolder') return [];
+  if (!scopeOf(target, edge.entryId)) return ['権限を与えるファイル・フォルダがワークフォルダにありません'];
+  if (edge.permission === 'none' && !edge.attach) return ['権限が無く、プロンプトにも含めないため、このエッジは何もしません'];
+  return [];
 }
 
 /** ワークフォルダの初期エントリの、名前・置き場所・中身の問題 */

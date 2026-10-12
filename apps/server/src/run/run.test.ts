@@ -3,10 +3,11 @@ import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, LanguageModelV3
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createEdge,
   createNode,
   type AccessPermission,
+  type CallMemoryMode,
   type EdgeOf,
-  type FlowCondition,
   type GraphDefinition,
   type JudgeQuestion,
   type ModelProvider,
@@ -177,7 +178,7 @@ describe('ターン実行', () => {
       seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => textOf(m.content)));
       return streamOf(textParts('覚えました'));
     });
-    const graph = graphOf({ history: 'sessionCalls' });
+    const graph = graphOf({}, { memory: 'session' });
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -185,6 +186,52 @@ describe('ターン実行', () => {
     await runTurn(graph, '別の一つ目', undefined, { sessionId, parentTurnId: null });
 
     expect(seenBySub).toEqual([['一つ目'], ['一つ目', '二つ目'], ['別の一つ目']]);
+  });
+
+  it('セッション継続の記憶はツールエッジごとに分かれ、呼び出し元ごとのやりとりになる', async () => {
+    const seenBySub: string[][] = [];
+    scripts.set('main', (prompt) =>
+      lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: `main-${userTextOf(prompt)}` } }])),
+    );
+    scripts.set('other', (prompt) =>
+      lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: `other-${userTextOf(prompt)}` } }])),
+    );
+    scripts.set('sub', (prompt) => {
+      seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => textOf(m.content)));
+      return streamOf(textParts('覚えました'));
+    });
+    // ユーザー → main → other → ユーザー。main と other がそれぞれ researcher を呼ぶ
+    const graph = graphOf({}, { memory: 'session' });
+    graph.nodes.push(agentOf('other', { model: 'other' }));
+    graph.edges = graph.edges.filter((e) => e.id !== 'main-output');
+    graph.edges.push(flowEdge('main', 'other'), flowEdge('other', 'output'), toolEdge('other', 'researcher', { memory: 'session' }));
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+
+    expect(seenBySub).toEqual([['main-一つ目'], ['other-ok'], ['main-一つ目', 'main-二つ目'], ['other-ok', 'other-ok']]);
+  });
+
+  it('このターンの分の記憶なら、同じターンの2回目の呼び出しに1回目の依頼と応答が入り、次のターンには持ち越さない', async () => {
+    const seenBySub: string[][] = [];
+    scripts.set('main', (prompt) => {
+      // main はフローからの依頼と応答を覚えているので、今回の依頼より後のツールの結果だけを数える
+      const results = prompt.slice(prompt.findLastIndex((m) => m.role === 'user')).filter((m) => m.role === 'tool').length;
+      if (results === 2) return streamOf(textParts('ok'));
+      return streamOf(toolCallParts([{ name: 'researcher', input: { task: `${userTextOf(prompt)}-${results + 1}` } }]));
+    });
+    scripts.set('sub', (prompt) => {
+      seenBySub.push(prompt.filter((m) => m.role === 'user').map((m) => textOf(m.content)));
+      return streamOf(textParts('調べました'));
+    });
+    const graph = graphOf({}, { memory: 'turn' });
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+
+    expect(seenBySub).toEqual([['一つ目-1'], ['一つ目-1', '一つ目-2'], ['二つ目-1'], ['二つ目-1', '二つ目-2']]);
   });
 
   it('ファイルへの書き込みは同じ分岐の後のターンから読め、別の分岐からは読めない', async () => {
@@ -408,16 +455,24 @@ describe('ターン実行', () => {
     expect(listDescription).not.toContain('秘密');
   });
 
-  it('経緯がユーザーとの会話なら、前のターンまでの直近の発言を今回のメッセージの先頭に、添付ファイル・依頼と並べる', async () => {
+  it('ユーザーとの会話の直近の発言を今回のメッセージの先頭に、プロンプトに含めるフォルダのファイル・依頼と並べ、権限が無ければファイルのツールは渡さない', async () => {
     const prompts: string[][] = [];
-    scripts.set('main', (prompt) => {
+    let toolNames: string[] = [];
+    scripts.set('main', (prompt, options) => {
       prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
+      toolNames = (options.tools ?? []).map((t) => t.name);
       return streamOf(textParts(`返事${prompts.length}`));
     });
-    const graph = graphWithMain();
+    const graph = graphWithMain('none');
     const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
-    main.config = { ...main.config, history: 'recentConversation', historyLength: 2, attachments: ['notes/概要.md', 'notes/無い.md'] };
-    workfolderOf(graph).config.entries = [folderEntry('notes', 'notes'), fileEntry('summary', '概要.md', '# 概要', 'notes')];
+    main.config = { ...main.config, conversation: 'recent', conversationLength: 2 };
+    workfolderOf(graph).config.entries = [
+      folderEntry('notes', 'notes'),
+      fileEntry('summary', '概要.md', '# 概要', 'notes'),
+      fileEntry('detail', '詳細.md', '# 詳細', 'notes'),
+      fileEntry('other', 'other.md', '対象外'),
+    ];
+    graph.edges.push(accessEdge('main', 'notes', 'none', true));
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -428,22 +483,50 @@ describe('ターン実行', () => {
       [
         '<conversation>\n[user] 二つ目\n[assistant] 返事2\n</conversation>',
         '<file path="notes/概要.md">\n# 概要\n</file>',
-        '<file path="notes/無い.md" missing="true" />',
+        '<file path="notes/詳細.md">\n# 詳細\n</file>',
         '<task>\n三つ目\n</task>',
       ].join('\n\n'),
     ]);
+    expect(toolNames).toEqual([]);
   });
 
-  it('経緯がこのエージェントの呼び出しなら、前回までの依頼と応答だけを残し、添付ファイルは毎回その時点の中身にする', async () => {
+  it('プロンプトに含めるファイルは呼び出し時点の中身で、フォルダなら途中で作られたファイルも含め、消えたファイルは無いことを伝える', async () => {
+    const prompts: string[] = [];
+    scripts.set('main', (prompt) => {
+      if (lastIsToolResult(prompt)) return streamOf(textParts('ok'));
+      prompts.push(userTextOf(prompt));
+      return streamOf(
+        userTextOf(prompt).endsWith('変えて\n</task>')
+          ? toolCallParts([
+              { name: 'workfolder_write', input: { path: 'notes/新規.md', content: '追加' } },
+              { name: 'workfolder_delete', input: { path: '計画.md' } },
+            ])
+          : textParts('ok'),
+      );
+    });
+    const graph = graphWithMain('none');
+    workfolderOf(graph).config.entries = [folderEntry('notes', 'notes'), fileEntry('plan', '計画.md', '# 計画')];
+    graph.edges.push(accessEdge('main', 'notes', 'write', true), accessEdge('main', 'plan', 'write', true));
+    const sessionId = createSession(graph);
+
+    const first = await runTurn(graph, '変えて', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '見て', undefined, { sessionId, parentTurnId: first[0].turnId });
+
+    expect(prompts).toEqual([
+      '<file path="計画.md">\n# 計画\n</file>\n\n<task>\n変えて\n</task>',
+      '<file path="notes/新規.md">\n追加\n</file>\n\n<file path="計画.md" missing="true" />\n\n<task>\n見て\n</task>',
+    ]);
+  });
+
+  it('フローからの依頼と応答を覚えるなら、前回までの依頼と応答だけを残し、プロンプトに含めるファイルは毎回その時点の中身にする', async () => {
     const prompts: string[][] = [];
     scripts.set('main', (prompt) => {
       prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
       return streamOf(textParts(`返事${prompts.length}`));
     });
     const graph = graphWithMain();
-    const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
-    main.config = { ...main.config, history: 'sessionCalls', attachments: ['概要.md'] };
     workfolderOf(graph).config.entries = [fileEntry('summary', '概要.md', '# 概要')];
+    graph.edges.push(accessEdge('main', 'summary', 'none', true));
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
@@ -452,7 +535,7 @@ describe('ターン実行', () => {
     expect(prompts[1]).toEqual(['一つ目', '返事1', '<file path="概要.md">\n# 概要\n</file>\n\n<task>\n二つ目\n</task>']);
   });
 
-  it('ツールとして呼ばれたエージェントの経緯の会話は、呼び出し元のやりとりではなくユーザーとの会話', async () => {
+  it('ツールとして呼ばれたエージェントに含める会話は、呼び出し元のやりとりではなくユーザーとの会話', async () => {
     const subPrompts: string[] = [];
     scripts.set('main', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: '調べて' } }])),
@@ -461,7 +544,7 @@ describe('ターン実行', () => {
       subPrompts.push(userTextOf(prompt));
       return streamOf(textParts('調べました'));
     });
-    const graph = graphOf({ history: 'conversation' });
+    const graph = graphOf({ conversation: 'all' });
     const sessionId = createSession(graph);
 
     const first = await runTurn(graph, '旅行の計画を立てたい', undefined, { sessionId, parentTurnId: null });
@@ -470,7 +553,7 @@ describe('ターン実行', () => {
     expect(subPrompts).toEqual(['調べて', '<conversation>\n[user] 旅行の計画を立てたい\n[assistant] ok\n</conversation>\n\n<task>\n調べて\n</task>']);
   });
 
-  it('返すものが「なし」なら、終了用のツールで応答を待たずに終え、受け取った入力を後段へそのまま流す', async () => {
+  it('作業だけして終わるなら、終了用のツールで応答を待たずに終え、受け取った入力を後段へそのまま流す', async () => {
     const mainPrompts: string[] = [];
     let secretaryCalls = 0;
     scripts.set('main', (prompt) => {
@@ -490,7 +573,7 @@ describe('ターン実行', () => {
     });
     const graph = graphWithMain();
     workfolderOf(graph).config.entries = [folderEntry('notes', 'notes')];
-    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }));
+    graph.nodes.push(agentOf('secretary', { model: 'sub', workOnly: true }));
     graph.edges = [flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'output'), accessEdge('secretary', 'notes', 'write')];
 
     const events = await runTurn(graph, 'こんにちは');
@@ -509,7 +592,7 @@ describe('ターン実行', () => {
     });
     scripts.set('sub', () => streamOf(toolCallParts([{ name: 'finish', input: {} }])));
     const graph = graphWithMain();
-    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }));
+    graph.nodes.push(agentOf('secretary', { model: 'sub', workOnly: true }));
     graph.edges.push(flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('secretary', 'output'));
 
     const events = await runTurn(graph, 'こんにちは');
@@ -534,7 +617,7 @@ describe('ターン実行', () => {
     const flowGraphOf = (anyOf: string[]) => {
       const graph = graphWithMain();
       graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), agentOf('researcher', { model: 'sub' }));
-      graph.edges.push(flowEdge('input', 'triage'), flowEdge('triage', 'researcher', { questionKey: 'urgent', anyOf }), flowEdge('researcher', 'main'));
+      graph.edges.push(flowEdge('input', 'triage'), flowEdge('triage', 'researcher', { condition: { questionKey: 'urgent', anyOf } }), flowEdge('researcher', 'main'));
       return graph;
     };
     judgeRequests.length = 0;
@@ -576,8 +659,8 @@ describe('ターン実行', () => {
       ],
       edges: [
         flowEdge('input', 'triage'),
-        flowEdge('triage', 'urgentAgent', { questionKey: 'urgent', anyOf: ['yes'] }),
-        flowEdge('triage', 'calmAgent', { questionKey: 'urgent', anyOf: ['no'] }),
+        flowEdge('triage', 'urgentAgent', { condition: { questionKey: 'urgent', anyOf: ['yes'] } }),
+        flowEdge('triage', 'calmAgent', { condition: { questionKey: 'urgent', anyOf: ['no'] } }),
         flowEdge('urgentAgent', 'output'),
         flowEdge('calmAgent', 'output'),
       ],
@@ -589,6 +672,34 @@ describe('ターン実行', () => {
 
     expect(calledModels).toEqual(['openrouter:urgent']);
     expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: 'すぐ対応します' });
+  });
+
+  it('エッジごとに、エージェントの最後の応答文か全ステップの JSON を渡し、ツールの説明はツールエッジで決まる', async () => {
+    let researcherDescription = '';
+    scripts.set('main', (prompt, options) => {
+      const tool = options.tools?.find((t) => t.name === 'researcher');
+      researcherDescription = tool?.type === 'function' ? (tool.description ?? '') : '';
+      return lastIsToolResult(prompt) ? streamOf(textParts('回答')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: '調べて' } }]));
+    });
+    const reviewerPrompts: string[] = [];
+    scripts.set('sub', () => streamOf(textParts('調査結果')));
+    scripts.set('review', (prompt) => {
+      reviewerPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('確認しました'));
+    });
+    // ユーザー → main →（全ステップ）reviewer → ユーザー。main は researcher から全ステップを受け取る
+    const graph = graphOf({}, { returns: 'allSteps', description: '調べもの担当' });
+    graph.nodes.push(agentOf('reviewer', { model: 'review' }));
+    graph.edges.push(flowEdge('main', 'reviewer', { returns: 'allSteps' }), flowEdge('reviewer', 'output'));
+
+    const events = await runTurn(graph, 'こんにちは');
+
+    expect(researcherDescription).toBe('調べもの担当');
+    const toolResult = ofType(events, 'tool.result')[0];
+    expect(JSON.parse(toolResult.output as string)).toMatchObject([{ text: '調査結果', toolCalls: [] }]);
+    expect(ofType(events, 'call.finish').find((e) => e.nodeId === 'researcher')?.output).toBe(toolResult.output);
+    expect(JSON.parse(reviewerPrompts[0])).toMatchObject([{ toolCalls: [{ toolName: 'researcher' }] }, { text: '回答' }]);
+    expect(ofType(events, 'turn.finish')[0].reply).toBe('<main>\n回答\n</main>\n\n<reviewer>\n確認しました\n</reviewer>');
   });
 
   it('フローが循環していたらターンをエラーにする', async () => {
@@ -603,29 +714,32 @@ describe('ターン実行', () => {
   });
 });
 
-/** ユーザーの発言をモデル main のエージェント main が受けて返すグラフ。空のワークフォルダ work を持つ */
-function graphWithMain(): GraphDefinition {
+/**
+ * ユーザーの発言をモデル main のエージェント main が受けて返すグラフ。空のワークフォルダ work を持つ。
+ * main はユーザー入力からの依頼と応答を memory の範囲で覚える
+ */
+function graphWithMain(memory: CallMemoryMode = 'session'): GraphDefinition {
   return {
     nodes: [
       createNode('userInput', 'input', { x: 0, y: 0 }),
-      agentOf('main', { model: 'main', history: 'sessionCalls' }),
+      agentOf('main', { model: 'main' }),
       createNode('userOutput', 'output', { x: 0, y: 0 }),
       createNode('workfolder', 'work', { x: 0, y: 0 }),
     ],
-    edges: [flowEdge('input', 'main'), flowEdge('main', 'output')],
+    edges: [flowEdge('input', 'main', { memory }), flowEdge('main', 'output')],
     settings: { maxCallDepth: 5 },
   };
 }
 
-/** main がモデル sub のエージェント researcher をツールとして呼び出すグラフ */
-function graphOf(researcher: Partial<NodeOf<'agent'>['config']>): GraphDefinition {
+/** main がモデル sub のエージェント researcher を、edge の設定のツールエッジで呼び出すグラフ */
+function graphOf(researcher: Partial<NodeOf<'agent'>['config']>, edge: Partial<EdgeOf<'tool'>> = {}): GraphDefinition {
   const graph = graphWithMain();
-  graph.nodes.push(agentOf('researcher', { model: 'sub', description: '調べもの担当', ...researcher }));
-  graph.edges.push(toolEdge('main', 'researcher'));
+  graph.nodes.push(agentOf('researcher', { model: 'sub', ...researcher }));
+  graph.edges.push(toolEdge('main', 'researcher', edge));
   return graph;
 }
 
-/** id をツール名にもするエージェント。指定がなければ経緯なしで、最終テキストを返す */
+/** id をツール名にもするエージェント。指定がなければユーザーとの会話を含めない */
 function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf<'agent'> {
   const node = createNode('agent', id, { x: 0, y: 0 });
   node.config = { ...node.config, name: id, maxSteps: 5, ...config };
@@ -634,7 +748,7 @@ function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf
 
 /** 判定ノード triage */
 function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
-  return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', description: '', model: '', questions } };
+  return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', model: '', questions } };
 }
 
 function workfolderOf(graph: GraphDefinition): NodeOf<'workfolder'> {
@@ -657,17 +771,17 @@ function workfolderGraphOf(permission: AccessPermission): GraphDefinition {
   return graph;
 }
 
-function toolEdge(source: string, target: string): EdgeOf<'tool'> {
-  return { id: `${source}-${target}`, kind: 'tool', source, target };
+function toolEdge(source: string, target: string, edge: Partial<EdgeOf<'tool'>> = {}): EdgeOf<'tool'> {
+  return { ...createEdge('tool', `${source}-${target}`, source, target), ...edge };
 }
 
-/** source に、ワークフォルダ work の entryId（null なら全体）以下への権限を与える */
-function accessEdge(source: string, entryId: string | null, permission: AccessPermission): EdgeOf<'access'> {
-  return { id: `${source}-${entryId ?? 'work'}`, kind: 'access', source, target: 'work', entryId, permission };
+/** source に、ワークフォルダ work の entryId（null なら全体）以下への権限を与える。attach ならプロンプトにも含める */
+function accessEdge(source: string, entryId: string | null, permission: AccessPermission, attach = false): EdgeOf<'access'> {
+  return { ...createEdge('access', `${source}-${entryId ?? 'work'}`, source, 'work'), entryId, permission, attach };
 }
 
-function flowEdge(source: string, target: string, condition: FlowCondition | null = null): EdgeOf<'flow'> {
-  return { id: `${source}-${target}`, kind: 'flow', source, target, condition };
+function flowEdge(source: string, target: string, edge: Partial<EdgeOf<'flow'>> = {}): EdgeOf<'flow'> {
+  return { ...createEdge('flow', `${source}-${target}`, source, target), ...edge };
 }
 
 function createSession(graph: GraphDefinition): string {

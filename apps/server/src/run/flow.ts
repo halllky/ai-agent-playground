@@ -1,4 +1,4 @@
-import { flowOrder, type EdgeOf, type GraphDefinition, type InvocableNode, type NodeOf, type RunStatus } from 'protocol';
+import { flowOrder, type EdgeOf, type GraphDefinition, type InvocableNode, type NodeOf, type ReturnMode, type RunStatus } from 'protocol';
 import { invoke, turnHeader, type RunScope } from './invoke.ts';
 import { meetsCondition, type Verdict } from './nodes/judge.ts';
 
@@ -9,7 +9,8 @@ export type FlowOutcome = { status: Exclude<RunStatus, 'running'>; reply: string
  * ユーザーの発言をユーザー入力ノードから流し、流れの順にノードを1回ずつ呼び出して、ユーザー出力ノードへ流れ込んだものを返答にする。
  *
  * 各ノードの入力は流れてきた出力をつなげたもので、何も流れてこなかった（条件を満たさなかった・前段が飛ばされた）ノードは飛ばす。
- * 返すものが「なし」のエージェントは、受け取った入力をそのまま後段へ流す（前処理として直列に挟める）。
+ * エージェントからは、フローエッジごとに選んだ形（最後の応答文か全ステップ）で流す。
+ * 作業だけして終わるエージェントは、受け取った入力をそのまま後段へ流す（前処理として直列に挟める）。
  * 同じ出所の出力が複数の経路から届いたら1つにまとめる。失敗したノードは、エラーの内容を出力として流す。
  * 返答には、ユーザー自身の発言は含めない。
  */
@@ -19,7 +20,8 @@ export async function runFlow(scope: RunScope, userText: string): Promise<FlowOu
   if (!input) return { status: 'error', reply: '', error: 'ユーザー入力ノードがありません' };
   if (!order) return { status: 'error', reply: '', error: 'フローが循環しています' };
 
-  const outputs = new Map<string, Output>([[input.id, { node: input, pieces: [{ origin: input, text: userText }], verdict: null }]]);
+  const userPieces = [{ origin: input, text: userText }];
+  const outputs = new Map<string, Output>([[input.id, { node: input, pieces: { finalText: userPieces, allSteps: userPieces }, verdict: null }]]);
   let failed = false;
   for (const node of order) {
     if (scope.signal.aborted) break;
@@ -28,10 +30,13 @@ export async function runFlow(scope: RunScope, userText: string): Promise<FlowOu
       scope.emit(turnHeader, { type: 'log', level: 'info', message: `${node.config.name} には何も流れてこなかったため実行しませんでした` });
       continue;
     }
-    const result = await invoke(scope, { node, input: joined(pieces), parentCallId: null, toolCallId: null, depth: 0 });
+    const result = await invoke(scope, { node, input: joined(pieces), toolEdge: null, parentCallId: null, toolCallId: null, depth: 0 });
     if (result.status === 'error') failed = true;
-    const passesThrough = node.kind === 'agent' && node.config.returns === 'none' && result.status === 'done';
-    outputs.set(node.id, { node, pieces: passesThrough ? pieces : [{ origin: node, text: result.output ?? '' }], verdict: result.verdict });
+    const passesThrough = node.kind === 'agent' && node.config.workOnly && result.status === 'done';
+    const outputPieces = passesThrough
+      ? { finalText: pieces, allSteps: pieces }
+      : { finalText: [{ origin: node, text: result.output ?? '' }], allSteps: [{ origin: node, text: result.stepsOutput ?? '' }] };
+    outputs.set(node.id, { node, pieces: outputPieces, verdict: result.verdict });
   }
 
   const output = scope.graph.nodes.find((n) => n.kind === 'userOutput');
@@ -39,11 +44,11 @@ export async function runFlow(scope: RunScope, userText: string): Promise<FlowOu
   return { status: scope.signal.aborted ? 'aborted' : failed ? 'error' : 'done', reply, error: null };
 }
 
-/** 流れる中身の1つと、それを出力したノード。返すものが「なし」のエージェントを通っても出所は変わらない */
+/** 流れる中身の1つと、それを出力したノード。作業だけして終わるエージェントを通っても出所は変わらない */
 type Piece = { origin: NodeOf<'userInput'> | InvocableNode; text: string };
 
-/** 実行したノード1つの出力。verdict は判定ノードの回答（それ以外や失敗時は null） */
-type Output = { node: NodeOf<'userInput'> | InvocableNode; pieces: Piece[]; verdict: Verdict | null };
+/** 実行したノード1つの出力。pieces はフローエッジの returns ごとに流す中身（エージェント以外はどれも同じ）。verdict は判定ノードの回答（それ以外や失敗時は null） */
+type Output = { node: NodeOf<'userInput'> | InvocableNode; pieces: Record<ReturnMode, Piece[]>; verdict: Verdict | null };
 
 /** nodeId へ流れてくる中身。送り元が判定ノードのフローは、条件を満たすものだけ流れる。同じ出所のものは最初の1つだけ残す */
 function piecesTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, Output>): Piece[] {
@@ -53,8 +58,9 @@ function piecesTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, O
       const output = outputs.get(edge.source);
       if (!output) return [];
       const { node, verdict } = output;
-      if (!edge.condition || node.kind !== 'judge') return output.pieces;
-      return verdict && meetsCondition(node, verdict, edge.condition) ? output.pieces : [];
+      const pieces = output.pieces[edge.returns];
+      if (!edge.condition || node.kind !== 'judge') return pieces;
+      return verdict && meetsCondition(node, verdict, edge.condition) ? pieces : [];
     });
   return pieces.filter((p, i) => pieces.findIndex((q) => q.origin.id === p.origin.id) === i);
 }

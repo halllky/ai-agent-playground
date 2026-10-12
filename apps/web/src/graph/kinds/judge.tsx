@@ -12,7 +12,6 @@ export const judgeView: NodeKindView<'judge'> = {
     return (
       <>
         <TextField label="名前（ツール名）" value={node.config.name} onChange={(name) => set({ name })} />
-        <TextField label="ツールの説明（呼び出し元に見える）" value={node.config.description} onChange={(description) => set({ description })} />
         <TextField label="モデル（空なら jev-latest）" value={node.config.model} onChange={(model) => set({ model })} />
         <SectionHeading>質問</SectionHeading>
         <Hint>入力された内容について、ここで決めた質問への回答を確率付きで返します。</Hint>

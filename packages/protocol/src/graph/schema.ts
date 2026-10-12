@@ -1,18 +1,25 @@
 import { z } from 'zod';
 import { modelProviders } from '../model.ts';
 
+/** エージェントに、前のターンまでのユーザーとの会話をどれだけ渡すか。recent なら直近 conversationLength 発言 */
+export const conversationModes = ['none', 'recent', 'all'] as const;
 /**
- * エージェントに、この呼び出しより前の経緯として何を渡すか。1つだけを選ぶので、同じ発言が二重に入ることはない。
- * - recentConversation / conversation: ユーザーとの会話のうち、前のターンまでの直近 historyLength 発言 / すべて
- * - turnCalls / sessionCalls: このエージェントの、このターン / この会話でのこれまでの呼び出しの依頼と応答（ツールコールを含む）
+ * エージェントに、エッジの呼び出し元からのこれまでの依頼と応答（ツールコールを含む）を、このターン / この会話の分だけ渡すか。
+ * 記憶はツールエッジごと、フローからの呼び出しはノードごとに分かれる
  */
-export const historyModes = ['none', 'recentConversation', 'conversation', 'turnCalls', 'sessionCalls'] as const;
-/** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる。フローでは受け取った入力をそのまま後段へ流す */
-export const returnModes = ['finalText', 'allSteps', 'none'] as const;
-/** ワークフォルダへのアクセス権限。write は read を含む */
-export const accessPermissions = ['read', 'write'] as const;
+export const callMemoryModes = ['none', 'turn', 'session'] as const;
+/** エッジの呼び出し元からのこれまでの依頼と応答を、どの範囲だけ渡すか */
+export type CallMemoryMode = (typeof callMemoryModes)[number];
+/** エッジの先へエージェントの出力として何を渡すか。エージェントが workOnly なら使わない */
+export const returnModes = ['finalText', 'allSteps'] as const;
+/** エッジの先へエージェントの出力として何を渡すか */
+export type ReturnMode = (typeof returnModes)[number];
+/** ワークフォルダへのアクセス権限。write は read を含む。none はプロンプトに含めるだけのエッジに使う */
+export const accessPermissions = ['none', 'read', 'write'] as const;
 /** ワークフォルダへのアクセス権限 */
 export type AccessPermission = (typeof accessPermissions)[number];
+/** ファイルを操作できるアクセス権限 */
+export type FilePermission = Exclude<AccessPermission, 'none'>;
 /** Web検索の深さ。advanced は精度が上がるがクレジットを多く使う */
 export const searchDepths = ['basic', 'advanced'] as const;
 
@@ -93,8 +100,8 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     position: positionSchema,
   }),
   /**
-   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・前回までの経緯（history）・今回のメッセージの順に渡す。
-   * 今回のメッセージは、添付ファイル（attachments）と依頼を並べたもの。
+   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・呼び出し元とのこれまでの依頼と応答（エッジの memory）・今回のメッセージの順に渡す。
+   * 今回のメッセージは、ユーザーとの会話（conversation）・プロンプトに含めるワークフォルダのファイル（アクセスエッジの attach）・依頼を並べたもの。
    * 依頼は、フローから呼ばれたときは流れてきた入力、ツールとして呼ばれたときは呼び出し元が書いた引数
    */
   z.object({
@@ -103,18 +110,18 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     position: positionSchema,
     config: z.object({
       name: z.string(),
-      /** 呼び出し元に見せるツールの説明 */
-      description: z.string(),
       provider: z.enum(modelProviders),
       model: z.string(),
       systemPrompt: z.string(),
       maxSteps: z.number().int().positive(),
-      history: z.enum(historyModes),
-      /** history が recentConversation のときに入れる、直近の発言の数 */
-      historyLength: z.number().int().positive(),
-      /** 呼び出しのたびに今の中身を入れる、ワークフォルダのファイルのパス */
-      attachments: z.array(z.string()),
-      returns: z.enum(returnModes),
+      conversation: z.enum(conversationModes),
+      /** conversation が recent のときに入れる、直近の発言の数 */
+      conversationLength: z.number().int().positive(),
+      /**
+       * 作業だけして終わり、何も返さないか。終了用のツールで応答を待たずに終われる。
+       * ツールとしては完了したことだけを返し、フローでは受け取った入力をそのまま後段へ流す（エッジの returns は使わない）
+       */
+      workOnly: z.boolean(),
     }),
   }),
   /**
@@ -143,7 +150,6 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     position: positionSchema,
     config: z.object({
       name: z.string(),
-      description: z.string(),
       /** 空なら SDK の既定のモデル */
       model: z.string(),
       questions: z.array(judgeQuestionSchema),
@@ -177,14 +183,21 @@ export function isInvocable(node: GraphNode): node is InvocableNode {
 
 /** グラフのエッジ。両端のノードが存在するかどうかは検証しない */
 export const graphEdgeSchema = z.discriminatedUnion('kind', [
-  /** 送り元のエージェントが、送り先をツールとして使う */
+  /** 送り元のエージェントが、送り先をツールとして使う。returns と memory は送り先がエージェントのときだけ使う */
   z.object({
     id: z.string(),
     kind: z.literal('tool'),
     source: z.string(),
     target: z.string(),
+    /** 送り元に見せるツールの説明。判定・Web検索は空なら既定の説明 */
+    description: z.string(),
+    returns: z.enum(returnModes),
+    memory: z.enum(callMemoryModes),
   }),
-  /** 送り元のエージェントに、送り先のワークフォルダの中のエントリ（null なら全体）以下への権限を与える */
+  /**
+   * 送り元のエージェントに、送り先のワークフォルダの中のエントリ（null なら全体）以下への権限を与える。
+   * attach なら、呼び出しのたびにその時点でその範囲にあるファイルの中身をプロンプトに含める
+   */
   z.object({
     id: z.string(),
     kind: z.literal('access'),
@@ -192,8 +205,12 @@ export const graphEdgeSchema = z.discriminatedUnion('kind', [
     target: z.string(),
     entryId: z.string().nullable(),
     permission: z.enum(accessPermissions),
+    attach: z.boolean(),
   }),
-  /** 送り元の出力を、送り先の入力として流す */
+  /**
+   * 送り元の出力を、送り先の入力として流す。returns は送り元がエージェントのとき、memory は送り先がエージェントのときだけ使う。
+   * フローではエージェントは1ターンに1回しか呼ばれないので memory の turn は使わず、送り先へ入るフローエッジの memory はそろえる
+   */
   z.object({
     id: z.string(),
     kind: z.literal('flow'),
@@ -201,6 +218,8 @@ export const graphEdgeSchema = z.discriminatedUnion('kind', [
     target: z.string(),
     /** 送り元が判定ノードのとき、回答がこれを満たす場合だけ流す。null なら常に流す */
     condition: flowConditionSchema.nullable(),
+    returns: z.enum(returnModes),
+    memory: z.enum(callMemoryModes),
   }),
 ]);
 /** グラフのエッジ */

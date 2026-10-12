@@ -31,7 +31,14 @@ export type EdgeEnds = { source: GraphNode | undefined; target: GraphNode | unde
 export type EdgeKindView<K extends EdgeKind> = {
   /** キャンバス上のエッジに添える説明。空文字なら何も出さない */
   label(edge: EdgeOf<K>, ends: EdgeEnds): string;
-  Inspector(props: { edge: EdgeOf<K>; source: GraphNode | undefined; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
+  /** onGraphChange は、エッジの設定に連動する両端のノードやほかのエッジも書き換えるときに使う */
+  Inspector(
+    props: EdgeEnds & {
+      edge: EdgeOf<K>;
+      onChange: (edge: EdgeOf<K>) => void;
+      onGraphChange: (update: (graph: GraphDefinition) => GraphDefinition) => void;
+    },
+  ): ReactNode;
 };
 
 /** 全ノード種別の画面上の振る舞い。並びはパレットのボタンの並び */

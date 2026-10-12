@@ -1,19 +1,29 @@
 import type { WorkfolderFiles } from '../api.ts';
-import type { AccessPermission, GraphDefinition, NodeOf, WorkfolderEntry } from './schema.ts';
+import type { FilePermission, GraphDefinition, NodeOf, WorkfolderEntry } from './schema.ts';
 
 /** ワークフォルダの中の、権限を与える範囲。path が空ならワークフォルダ全体。フォルダならその中のすべてを含む */
 export type WorkfolderScope = { path: string; isFolder: boolean };
 
 /** エージェントに与えた、ワークフォルダの中の範囲1つへの権限 */
-export type WorkfolderAccess = { scope: WorkfolderScope; permission: AccessPermission };
+export type WorkfolderAccess = { scope: WorkfolderScope; permission: FilePermission };
 
-/** エージェントから出るアクセスエッジが与える権限。送り先がワークフォルダでないエッジや、もう無いエントリへのエッジは除く */
+/** エージェントから出るアクセスエッジが与える権限。権限が none のエッジは除く */
 export function agentAccess(graph: GraphDefinition, agent: NodeOf<'agent'>): WorkfolderAccess[] {
+  return accessEdgesOf(graph, agent).flatMap(({ edge, scope }) => (edge.permission === 'none' ? [] : [{ scope, permission: edge.permission }]));
+}
+
+/** エージェントから出るアクセスエッジのうち、プロンプトに含める範囲。エッジの順に並べる */
+export function agentAttachments(graph: GraphDefinition, agent: NodeOf<'agent'>): WorkfolderScope[] {
+  return accessEdgesOf(graph, agent).flatMap(({ edge, scope }) => (edge.attach ? [scope] : []));
+}
+
+/** エージェントから出るアクセスエッジと、その範囲。送り先がワークフォルダでないエッジや、もう無いエントリへのエッジは除く */
+function accessEdgesOf(graph: GraphDefinition, agent: NodeOf<'agent'>) {
   return graph.edges.flatMap((edge) => {
     if (edge.kind !== 'access' || edge.source !== agent.id) return [];
     const target = graph.nodes.find((n) => n.id === edge.target);
     const scope = target?.kind === 'workfolder' ? scopeOf(target, edge.entryId) : null;
-    return scope ? [{ scope, permission: edge.permission }] : [];
+    return scope ? [{ edge, scope }] : [];
   });
 }
 

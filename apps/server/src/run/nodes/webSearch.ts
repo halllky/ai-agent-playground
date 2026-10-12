@@ -10,10 +10,10 @@ export async function search(node: NodeOf<'webSearch'>, query: string) {
   return response.results.map((r) => ({ title: r.title, url: r.url, content: r.content }));
 }
 
-/** Web検索ノードを、エージェントが呼び出すツールにする */
-export function webSearchTool(call: ToolCall): Tool {
+/** Web検索ノードを、エージェントが呼び出すツールにする。description が空なら既定の説明を使う */
+export function webSearchTool(description: string, call: ToolCall): Tool {
   return tool({
-    description: 'Web を検索し、関連するページのタイトル・URL・本文の抜粋を返す',
+    description: description || 'Web を検索し、関連するページのタイトル・URL・本文の抜粋を返す',
     inputSchema: z.object({ query: z.string().describe('検索語句') }),
     execute: ({ query }, options) => call(query, options),
   });

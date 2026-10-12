@@ -1,8 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage, Tool, ToolSet } from 'ai';
-import { isInvocable, type GraphDefinition, type InvocableNode, type NodeOf, type RunEventBody, type RunEventHeader, type RunStatus } from 'protocol';
+import {
+  flowMemoryOf,
+  isInvocable,
+  type EdgeOf,
+  type GraphDefinition,
+  type InvocableNode,
+  type NodeOf,
+  type RunEventBody,
+  type RunEventHeader,
+  type RunStatus,
+} from 'protocol';
 import type { TurnState } from '../db/index.ts';
-import { agentTool, invokeAgent } from './nodes/agent.ts';
+import { agentTool, invokeAgent, type CallMemory } from './nodes/agent.ts';
 import { Workfolder, workfolderTools } from './nodes/files.ts';
 import { judge, judgeTool, type Verdict } from './nodes/judge.ts';
 import { search, webSearchTool } from './nodes/webSearch.ts';
@@ -16,7 +26,7 @@ export type RunScope = {
   saveState(): void;
   /** ユーザーとの会話のうち、前のターンまでの発言と返答 */
   conversation: ModelMessage[];
-  /** ターン内でだけ持ち越す、エージェントノードの id ごとの呼び出しの依頼と応答 */
+  /** ターン内でだけ持ち越す、記憶の key ごとの呼び出しの依頼と応答 */
   turnMemory: Map<string, ModelMessage[]>;
   emit(header: CallHeader, body: RunEventBody): void;
 };
@@ -32,16 +42,22 @@ export type Invocation = {
   node: InvocableNode;
   /** 呼び出し元からの入力（エージェントへの依頼・判定の state・検索語句） */
   input: string;
+  /** ツールとして呼ぶときの、呼び出し元からのツールエッジ。フローから呼ぶときは null */
+  toolEdge: EdgeOf<'tool'> | null;
   parentCallId: string | null;
   toolCallId: string | null;
   /** ツールとしての呼び出しのネストの深さ。フローから呼ぶときは 0 */
   depth: number;
 };
 
-/** ノードの呼び出し1回分の結果。失敗したら output はその理由。返すものが「なし」のエージェントが成功したら output は null */
+/**
+ * ノードの呼び出し1回分の結果。失敗したら output も stepsOutput もその理由。作業だけして終わるエージェントが成功したらどちらも null。
+ * output はエージェントなら最後の応答文で、stepsOutput は全ステップの JSON（エージェント以外は output と同じ）
+ */
 export type InvocationResult = {
   status: Exclude<RunStatus, 'running'>;
   output: string | null;
+  stepsOutput: string | null;
   /** 判定ノードの回答。それ以外や失敗時は null */
   verdict: Verdict | null;
 };
@@ -50,7 +66,7 @@ export type InvocationResult = {
 export type ToolCall = (input: string, options: { toolCallId: string }) => Promise<string | null>;
 
 /**
- * ノードを1回呼び出し、call.start から call.finish までのイベントを残す。
+ * ノードを1回呼び出し、call.start から call.finish までのイベントを残す。call.finish の出力は、ツールエッジで選んだ形（フローなら最後の応答文）。
  * エージェントはツールを持てるので、その中でさらに呼び出しが入れ子になる。失敗や Abort は例外にせず結果の status で返す
  */
 export async function invoke(scope: RunScope, inv: Invocation): Promise<InvocationResult> {
@@ -63,10 +79,16 @@ export async function invoke(scope: RunScope, inv: Invocation): Promise<Invocati
     result = await dispatch(scope, inv, header);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    result = { status: scope.signal.aborted ? 'aborted' : 'error', output: message, verdict: null, error: message };
+    result = { status: scope.signal.aborted ? 'aborted' : 'error', output: message, stepsOutput: message, verdict: null, error: message };
   }
-  emit({ type: 'call.finish', status: result.status, output: result.output ?? '', error: result.error });
-  return { status: result.status, output: result.output, verdict: result.verdict };
+  const { error, ...outcome } = result;
+  emit({ type: 'call.finish', status: outcome.status, output: outputFor(inv.toolEdge, outcome) ?? '', error });
+  return outcome;
+}
+
+/** 呼び出しの結果のうち、toolEdge の呼び出し元へ返す形。フローからの呼び出し（null）なら最後の応答文 */
+function outputFor(toolEdge: EdgeOf<'tool'> | null, result: InvocationResult): string | null {
+  return toolEdge?.returns === 'allSteps' ? result.stepsOutput : result.output;
 }
 
 /** ノード種別ごとの実行。失敗は例外で投げてよい */
@@ -78,18 +100,25 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
   switch (node.kind) {
     case 'agent': {
       const tools = toolsFor(scope, node, header.callId, inv.depth);
-      const outcome = await invokeAgent(scope, node, inv.input, tools, (body) => scope.emit(header, body));
+      const outcome = await invokeAgent(scope, node, inv.input, memoryOf(scope.graph, inv), tools, (body) => scope.emit(header, body));
       return { ...outcome, verdict: null };
     }
     case 'judge': {
       const verdict = await judge(node, inv.input, scope.signal);
-      return { status: 'done', output: JSON.stringify(verdict.answers, null, 2), verdict, error: null };
+      const output = JSON.stringify(verdict.answers, null, 2);
+      return { status: 'done', output, stepsOutput: output, verdict, error: null };
     }
     case 'webSearch': {
-      const results = await search(node, inv.input);
-      return { status: 'done', output: JSON.stringify(results, null, 2), verdict: null, error: null };
+      const output = JSON.stringify(await search(node, inv.input), null, 2);
+      return { status: 'done', output, stepsOutput: output, verdict: null, error: null };
     }
   }
+}
+
+/** エージェントの呼び出しで使う、依頼と応答の記憶。ツールならツールエッジごと、フローならノードごとに分ける */
+function memoryOf(graph: GraphDefinition, inv: Invocation): CallMemory {
+  if (inv.toolEdge) return { mode: inv.toolEdge.memory, key: inv.toolEdge.id };
+  return { mode: flowMemoryOf(graph, inv.node.id), key: `flow:${inv.node.id}` };
 }
 
 /**
@@ -101,26 +130,26 @@ function toolsFor(scope: RunScope, agent: NodeOf<'agent'>, callId: string | null
   for (const edge of scope.graph.edges) {
     if (edge.kind !== 'tool' || edge.source !== agent.id) continue;
     const target = scope.graph.nodes.find((n) => n.id === edge.target);
-    if (target && isInvocable(target)) tools[target.config.name] = nodeTool(scope, target, callId, depth + 1);
+    if (target && isInvocable(target)) tools[target.config.name] = nodeTool(scope, target, edge, callId, depth + 1);
   }
   Object.assign(tools, workfolderTools(scope.graph, agent, new Workfolder(scope.state.files, () => scope.saveState())));
   return serialized(tools);
 }
 
-/** ノードを呼び出すツール。失敗はツールのエラーとして呼び出し元に返す */
-function nodeTool(scope: RunScope, node: InvocableNode, parentCallId: string | null, depth: number): Tool {
+/** toolEdge の送り先のノードを呼び出すツール。説明と返す形は toolEdge で決まる。失敗はツールのエラーとして呼び出し元に返す */
+function nodeTool(scope: RunScope, node: InvocableNode, toolEdge: EdgeOf<'tool'>, parentCallId: string | null, depth: number): Tool {
   const call: ToolCall = async (input, { toolCallId }) => {
-    const result = await invoke(scope, { node, input, parentCallId, toolCallId, depth });
+    const result = await invoke(scope, { node, input, toolEdge, parentCallId, toolCallId, depth });
     if (result.status === 'error') throw new Error(result.output ?? '');
-    return result.output;
+    return outputFor(toolEdge, result);
   };
   switch (node.kind) {
     case 'agent':
-      return agentTool(node, call);
+      return agentTool(toolEdge.description, call);
     case 'judge':
-      return judgeTool(node, call);
+      return judgeTool(node, toolEdge.description, call);
     case 'webSearch':
-      return webSearchTool(call);
+      return webSearchTool(toolEdge.description, call);
   }
 }
 

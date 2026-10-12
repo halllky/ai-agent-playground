@@ -62,6 +62,16 @@ export function SelectField<T extends string>(props: {
   );
 }
 
+/** オンかオフを選ぶ入力 */
+export function CheckboxField(props: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="mb-2 flex items-center gap-1.5">
+      <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
+      {props.label}
+    </label>
+  );
+}
+
 /** options から複数選ぶ入力。values の並びは options の順にそろえる */
 export function ChecklistField<T extends string>(props: {
   label: string;

@@ -27,7 +27,7 @@ export const sessions = sqliteTable(
 
 /**
  * ターンが終わった時点で会話に残っている状態の写し。次のターンは親ターンの写しから始める。
- * files はワークフォルダの中身、memories はセッションで継続する記憶を持つエージェントノードの id ごとの会話
+ * files はワークフォルダの中身、memories はセッションで継続する、エージェントへの依頼と応答の記憶ごとの会話
  */
 export type TurnState = { files: WorkfolderFiles; memories: Record<string, ModelMessage[]> };
 
