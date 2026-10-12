@@ -27,8 +27,6 @@ export type EdgeEnds = { source: GraphNode | undefined; target: GraphNode | unde
 export type EdgeKindView<K extends EdgeKind> = {
   /** キャンバス上のエッジに添える説明。空文字なら何も出さない */
   label(edge: EdgeOf<K>, ends: EdgeEnds): string;
-  /** 中身は何も伝えず、実行の順序だけを決めるエッジか。キャンバスでは破線で描く */
-  orderOnly(edge: EdgeOf<K>, ends: EdgeEnds): boolean;
   Inspector(props: { edge: EdgeOf<K>; source: GraphNode | undefined; target: GraphNode | undefined; onChange: (edge: EdgeOf<K>) => void }): ReactNode;
 };
 

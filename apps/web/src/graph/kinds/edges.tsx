@@ -5,7 +5,6 @@ import type { EdgeKindView } from './index.ts';
 /** ツールエッジの画面上の振る舞い。権限は送り先がフォルダのときだけ表示・編集する */
 export const toolEdgeView: EdgeKindView<'tool'> = {
   label: (edge, { target }) => (target?.kind === 'files' ? permissionLabels[edge.permission] : ''),
-  orderOnly: () => false,
   Inspector: ({ edge, target, onChange }) =>
     target?.kind === 'files' ? (
       <SelectField
@@ -19,16 +18,14 @@ export const toolEdgeView: EdgeKindView<'tool'> = {
     ),
 };
 
-/** フローエッジの画面上の振る舞い。条件は送り元が判定ノードのときだけ編集できる。何も返さないエージェントからは順序だけが伝わる */
+/** フローエッジの画面上の振る舞い。条件は送り元が判定ノードのときだけ編集できる。何も返さないエージェントからは、受け取った入力がそのまま流れる */
 export const flowEdgeView: EdgeKindView<'flow'> = {
-  label: (edge, ends) =>
-    flowEdgeView.orderOnly(edge, ends) ? '順序のみ' : edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : '',
-  orderOnly: (_, { source }) => source?.kind === 'agent' && source.config.returns === 'none',
+  label: (edge) => (edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : ''),
   Inspector: ({ edge, source, onChange }) => (
     <>
       <Hint>
         送り元の出力を、送り先の入力として流します。ユーザーから流れをたどれるノードが、流れの順に1回ずつ実行されます。
-        何も流れてこなかったノードは実行しません。
+        何も流れてこなかったノードは実行しません。返すものが「なし」のエージェントからは、そのエージェントが受け取った入力がそのまま流れます。
       </Hint>
       {source?.kind === 'judge' && (
         <FlowConditionFields questions={source.config.questions} condition={edge.condition} onChange={(condition) => onChange({ ...edge, condition })} />

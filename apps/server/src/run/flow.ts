@@ -9,8 +9,9 @@ export type FlowOutcome = { status: Exclude<RunStatus, 'running'>; reply: string
  * ユーザーの発言をユーザーノードから流し、流れの順にノードを1回ずつ呼び出して、ユーザーノードへ流れ込んだものを返答にする。
  *
  * 各ノードの入力は流れてきた出力をつなげたもので、何も流れてこなかった（条件を満たさなかった・前段が飛ばされた）ノードは飛ばす。
- * 返すものが「なし」のエージェントからは、流れの順序だけが伝わり、中身は何も流れない（後段は飛ばさない）。
- * 失敗したノードは、エラーの内容を出力として流す。
+ * 返すものが「なし」のエージェントは、受け取った入力をそのまま後段へ流す（前処理として直列に挟める）。
+ * 同じ出所の出力が複数の経路から届いたら1つにまとめる。失敗したノードは、エラーの内容を出力として流す。
+ * 返答には、ユーザー自身の発言は含めない。
  */
 export async function runFlow(scope: RunScope, userText: string): Promise<FlowOutcome> {
   const user = scope.graph.nodes.find((n) => n.kind === 'user');
@@ -18,50 +19,54 @@ export async function runFlow(scope: RunScope, userText: string): Promise<FlowOu
   if (!user) return { status: 'error', reply: '', error: 'ユーザーノードがありません' };
   if (!order) return { status: 'error', reply: '', error: 'フローが循環しています' };
 
-  const outputs = new Map<string, Output>([[user.id, { node: user, text: userText, verdict: null }]]);
+  const outputs = new Map<string, Output>([[user.id, { node: user, pieces: [{ origin: user, text: userText }], verdict: null }]]);
   let failed = false;
   for (const node of order) {
     if (scope.signal.aborted) break;
-    const inputs = inputsTo(scope.graph, node.id, outputs);
-    if (inputs.length === 0) {
+    const pieces = piecesTo(scope.graph, node.id, outputs);
+    if (pieces.length === 0) {
       scope.emit(turnHeader, { type: 'log', level: 'info', message: `${node.config.name} には何も流れてこなかったため実行しませんでした` });
       continue;
     }
-    const result = await invoke(scope, { node, input: joined(inputs), parentCallId: null, toolCallId: null, depth: 0 });
+    const result = await invoke(scope, { node, input: joined(pieces), parentCallId: null, toolCallId: null, depth: 0 });
     if (result.status === 'error') failed = true;
-    outputs.set(node.id, { node, text: result.output, verdict: result.verdict });
+    const passesThrough = node.kind === 'agent' && node.config.returns === 'none' && result.status === 'done';
+    outputs.set(node.id, { node, pieces: passesThrough ? pieces : [{ origin: node, text: result.output ?? '' }], verdict: result.verdict });
   }
 
-  const reply = joined(inputsTo(scope.graph, user.id, outputs));
+  const reply = joined(piecesTo(scope.graph, user.id, outputs).filter((p) => p.origin.kind !== 'user'));
   return { status: scope.signal.aborted ? 'aborted' : failed ? 'error' : 'done', reply, error: null };
 }
 
-/** 実行したノード1つの出力。text は何も返さないエージェントなら null、verdict は判定ノードの回答（失敗したら null） */
-type Output = { node: NodeOf<'user'> | InvocableNode; text: string | null; verdict: Verdict | null };
+/** 流れる中身の1つと、それを出力したノード。返すものが「なし」のエージェントを通っても出所は変わらない */
+type Piece = { origin: NodeOf<'user'> | InvocableNode; text: string };
 
-/** nodeId へ流れてくる出力。送り元が判定ノードのフローは、条件を満たすものだけ流れる */
-function inputsTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, Output>): Output[] {
-  return graph.edges
+/** 実行したノード1つの出力。verdict は判定ノードの回答（それ以外や失敗時は null） */
+type Output = { node: NodeOf<'user'> | InvocableNode; pieces: Piece[]; verdict: Verdict | null };
+
+/** nodeId へ流れてくる中身。送り元が判定ノードのフローは、条件を満たすものだけ流れる。同じ出所のものは最初の1つだけ残す */
+function piecesTo(graph: GraphDefinition, nodeId: string, outputs: Map<string, Output>): Piece[] {
+  const pieces = graph.edges
     .filter((e): e is EdgeOf<'flow'> => e.kind === 'flow' && e.target === nodeId)
     .flatMap((edge) => {
       const output = outputs.get(edge.source);
       if (!output) return [];
       const { node, verdict } = output;
-      if (!edge.condition || node.kind !== 'judge') return [output];
-      return verdict && meetsCondition(node, verdict, edge.condition) ? [output] : [];
+      if (!edge.condition || node.kind !== 'judge') return output.pieces;
+      return verdict && meetsCondition(node, verdict, edge.condition) ? output.pieces : [];
     });
+  return pieces.filter((p, i) => pieces.findIndex((q) => q.origin.id === p.origin.id) === i);
 }
 
 /**
- * 流れてきた出力をつなげた、ノードへの入力。中身のある出力が1つならその出力そのもの。
- * 複数なら送り元の名前のタグで囲って並べる。ユーザーの発言が含まれるときは、
+ * 流れてきた中身をつなげた、ノードへの入力。中身が1つならそのもの。
+ * 複数なら出所の名前のタグで囲って並べる。ユーザーの発言が含まれるときは、
  * ほかの出力をモデルがユーザーの言葉と取り違えないよう、発言と出力を別々のタグで囲み、出力はユーザーが書いたものでも見たものでもないと明記する
  */
-function joined(outputs: Output[]): string {
-  const inputs = outputs.filter((o): o is Output & { text: string } => o.text !== null);
-  if (inputs.length <= 1) return inputs[0]?.text ?? '';
-  const message = inputs.find((i) => i.node.kind === 'user');
-  const others = inputs.filter((i) => i !== message).map(sectionOf).join('\n\n');
+function joined(pieces: Piece[]): string {
+  if (pieces.length <= 1) return pieces[0]?.text ?? '';
+  const message = pieces.find((p) => p.origin.kind === 'user');
+  const others = pieces.filter((p) => p !== message).map(sectionOf).join('\n\n');
   if (!message) return others;
   return [
     `<user_message>\n${message.text}\n</user_message>`,
@@ -74,7 +79,7 @@ function joined(outputs: Output[]): string {
   ].join('\n');
 }
 
-function sectionOf({ node, text }: Output & { text: string }): string {
-  const name = node.kind === 'user' ? 'user' : node.config.name;
+function sectionOf({ origin, text }: Piece): string {
+  const name = origin.kind === 'user' ? 'user' : origin.config.name;
   return `<${name}>\n${text}\n</${name}>`;
 }

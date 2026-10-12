@@ -67,7 +67,6 @@ export function Canvas(props: {
       sourceHandle: edge.kind,
       targetHandle: edge.kind,
       label: view.label(edge, ends) || undefined,
-      style: view.orderOnly(edge, ends) ? { strokeDasharray: '5 4' } : undefined,
       selected: selection !== null && 'edgeId' in selection && selection.edgeId === edge.id,
       markerEnd: { type: MarkerType.ArrowClosed },
       // React Flow が選択中などに付ける線の色より、警告の色を優先する

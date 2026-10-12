@@ -421,7 +421,7 @@ describe('ターン実行', () => {
     expect(subPrompts).toEqual(['調べて', '<conversation>\n[user] 旅行の計画を立てたい\n[assistant] ok\n</conversation>\n\n<task>\n調べて\n</task>']);
   });
 
-  it('返すものが「なし」なら、終了用のツールで応答を待たずに終え、後段には順序だけを伝える', async () => {
+  it('返すものが「なし」なら、終了用のツールで応答を待たずに終え、受け取った入力を後段へそのまま流す', async () => {
     const mainPrompts: string[] = [];
     let secretaryCalls = 0;
     scripts.set('main', (prompt) => {
@@ -441,7 +441,7 @@ describe('ターン実行', () => {
     });
     const graph = graphWithMain();
     graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }), folderOf('notes', 'notes', []));
-    graph.edges = [flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('user', 'main'), flowEdge('main', 'user'), toolEdge('secretary', 'notes', 'write')];
+    graph.edges = [flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'user'), toolEdge('secretary', 'notes', 'write')];
 
     const events = await runTurn(graph, 'こんにちは');
 
@@ -449,6 +449,23 @@ describe('ターン実行', () => {
     expect(mainPrompts).toEqual(['こんにちは']);
     expect(ofType(events, 'call.finish').find((e) => e.nodeId === 'secretary')).toMatchObject({ status: 'done', output: '' });
     expect(turnFiles(events[0].turnId)?.files).toEqual({ 'notes/概要.md': '更新' });
+  });
+
+  it('同じ出所の出力が複数の経路から届いたら1つにまとめ、返答にはユーザー自身の発言を含めない', async () => {
+    const mainPrompts: string[] = [];
+    scripts.set('main', (prompt) => {
+      mainPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('回答'));
+    });
+    scripts.set('sub', () => streamOf(toolCallParts([{ name: 'finish', input: {} }])));
+    const graph = graphWithMain();
+    graph.nodes.push(agentOf('secretary', { model: 'sub', returns: 'none' }));
+    graph.edges.push(flowEdge('user', 'secretary'), flowEdge('secretary', 'main'), flowEdge('secretary', 'user'));
+
+    const events = await runTurn(graph, 'こんにちは');
+
+    expect(mainPrompts).toEqual(['こんにちは']);
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '回答' });
   });
 
   it('フローのノードを流れの順に実行して後段に出力を渡し、条件を満たさないノードは飛ばす', async () => {

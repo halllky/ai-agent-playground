@@ -7,7 +7,7 @@ import { modelProviders } from '../model.ts';
  * - turnCalls / sessionCalls: このエージェントの、このターン / この会話でのこれまでの呼び出しの依頼と応答（ツールコールを含む）
  */
 export const historyModes = ['none', 'recentConversation', 'conversation', 'turnCalls', 'sessionCalls'] as const;
-/** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる */
+/** エージェントから呼び出し元へ何を返すか。none なら何も返さず、終了用のツールで応答を待たずに終われる。フローでは受け取った入力をそのまま後段へ流す */
 export const returnModes = ['finalText', 'allSteps', 'none'] as const;
 /** フォルダへのアクセス権限。write は read を含む */
 export const accessPermissions = ['read', 'write'] as const;

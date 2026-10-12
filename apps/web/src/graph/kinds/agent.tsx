@@ -150,7 +150,7 @@ const historyLabels: Record<AgentConfig['history'], string> = {
 const returnLabels: Record<AgentConfig['returns'], string> = {
   finalText: '最後の応答文',
   allSteps: '全ステップ（JSON）',
-  none: 'なし（作業だけして終わる）',
+  none: 'なし（作業だけして終わる。最後の応答文には入力内容をそのまま流す）',
 };
 const historyOptions = historyModes.map((value) => ({ value, label: historyLabels[value] }));
 const returnOptions = returnModes.map((value) => ({ value, label: returnLabels[value] }));

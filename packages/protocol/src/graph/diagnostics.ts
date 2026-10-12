@@ -31,9 +31,6 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
   warnings.push(...folderOverlapWarnings(graph));
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
-    if (node.kind !== 'user' && node.kind !== 'files' && emptyTaskIsFlowing(graph, node.id, nodeById)) {
-      warnings.push({ target: { nodeId: node.id }, message: '「呼び出し元へ返すもの」が「なし」のエージェントからしか流れてこないので、受け取る内容が空になります' });
-    }
     if (node.kind !== 'agent') continue;
     const toolNames = agentToolNames(graph, node);
     const catalog = models[node.config.provider];
@@ -112,12 +109,6 @@ function folderOverlapWarnings(graph: GraphDefinition): GraphWarning[] {
     }
   }
   return warnings;
-}
-
-/** nodeId へのフローがあり、その送り元がすべて返すもの「なし」のエージェントか */
-function emptyTaskIsFlowing(graph: GraphDefinition, nodeId: string, nodeById: Map<string, GraphNode>): boolean {
-  const sources = graph.edges.filter((e) => e.kind === 'flow' && e.target === nodeId).map((e) => nodeById.get(e.source));
-  return sources.length > 0 && sources.every((s) => s?.kind === 'agent' && s.config.returns === 'none');
 }
 
 function judgeQuestionWarnings(questions: JudgeQuestion[]): string[] {
