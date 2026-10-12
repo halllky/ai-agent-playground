@@ -4,7 +4,7 @@ import '@xyflow/react/dist/style.css';
 import 'allotment/dist/style.css';
 import './index.css';
 import { App } from './App.tsx';
-import { initialize } from './session/store.ts';
+import { initialize } from './store.ts';
 
 void initialize();
 

@@ -27,7 +27,7 @@ import {
   type GraphWarning,
   type NodeKind,
 } from 'protocol';
-import { updateGraph } from '../session/store.ts';
+import { updateGraph } from '../store.ts';
 import type { Selection } from './GraphPanel.tsx';
 import { addableNodeKinds, edgeKindView, nodeKindView, nodeKindViews, nodeName } from './kinds/index.ts';
 

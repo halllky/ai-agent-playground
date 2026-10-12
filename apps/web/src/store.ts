@@ -10,7 +10,7 @@ import {
   type SessionRecord,
   type TurnRecord,
 } from 'protocol';
-import { api } from '../api.ts';
+import { api } from './api.ts';
 import { latestLeafOf, turnPath } from './branches.ts';
 
 type State = {
@@ -47,7 +47,7 @@ type State = {
  * 操作関数はサーバーとの通信の失敗を例外にせず、error に入れて表示に回す。
  * 未保存のグラフの変更は、グラフの切り替え・作成と発言の送信の前に保存する。
  */
-export const useSession = create<State>(() => ({
+export const useStore = create<State>(() => ({
   graphs: [],
   models: {},
   modelErrors: {},
@@ -74,14 +74,14 @@ export async function initialize(): Promise<void> {
   await report(async () => {
     let graphs = await api.graphs();
     if (graphs.length === 0) graphs = [await api.createGraph()];
-    useSession.setState({ graphs });
+    useStore.setState({ graphs });
     await openGraph(graphs[0].id);
   });
   // 使わないプロバイダのキーは未設定のことがあるので、取得失敗は画面全体のエラーにしない
   for (const provider of modelProviders) {
     api.models(provider).then(
-      (models) => useSession.setState((s) => ({ models: { ...s.models, [provider]: models } })),
-      (e) => useSession.setState((s) => ({ modelErrors: { ...s.modelErrors, [provider]: messageOf(e) } })),
+      (models) => useStore.setState((s) => ({ models: { ...s.models, [provider]: models } })),
+      (e) => useStore.setState((s) => ({ modelErrors: { ...s.modelErrors, [provider]: messageOf(e) } })),
     );
   }
 }
@@ -90,11 +90,11 @@ export async function initialize(): Promise<void> {
 export async function openGraph(graphId: string): Promise<void> {
   if (!(await saveGraph())) return;
   await report(async () => {
-    const graph = useSession.getState().graphs.find((g) => g.id === graphId)!;
+    const graph = useStore.getState().graphs.find((g) => g.id === graphId)!;
     let sessions = await api.graphSessions(graphId);
     if (sessions.length === 0) sessions = [await api.createSession(graphId)];
     const detail = await api.session(sessions[0].id);
-    useSession.setState({ graphId, graph: graph.definition, savedGraph: graph.definition, sessions });
+    useStore.setState({ graphId, graph: graph.definition, savedGraph: graph.definition, sessions });
     showSession(detail);
   });
 }
@@ -103,19 +103,19 @@ export async function openGraph(graphId: string): Promise<void> {
 export async function createGraph(): Promise<void> {
   if (!(await saveGraph())) return;
   await report(async () => {
-    const graph = await api.createGraph(useSession.getState().graphId ?? undefined);
-    useSession.setState((s) => ({ graphs: [graph, ...s.graphs] }));
+    const graph = await api.createGraph(useStore.getState().graphId ?? undefined);
+    useStore.setState((s) => ({ graphs: [graph, ...s.graphs] }));
     await openGraph(graph.id);
   });
 }
 
 /** 開いているグラフの名前を変える */
 export async function renameGraph(name: string): Promise<void> {
-  const { graphId } = useSession.getState();
+  const { graphId } = useStore.getState();
   if (!graphId) return;
   await report(async () => {
     const renamed = await api.updateGraph(graphId, { name });
-    useSession.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graphId ? renamed : g)) }));
+    useStore.setState((s) => ({ graphs: s.graphs.map((g) => (g.id === graphId ? renamed : g)) }));
   });
 }
 
@@ -124,14 +124,14 @@ export async function renameGraph(name: string): Promise<void> {
  * 1つも残らなければ既定の構成のグラフを作って開く
  */
 export async function deleteGraph(): Promise<void> {
-  const { graphId } = useSession.getState();
+  const { graphId } = useStore.getState();
   if (!graphId) return;
   await report(async () => {
     await api.deleteGraph(graphId);
-    const graphs = useSession.getState().graphs.filter((g) => g.id !== graphId);
+    const graphs = useStore.getState().graphs.filter((g) => g.id !== graphId);
     if (graphs.length === 0) graphs.push(await api.createGraph());
     // 消したグラフへ未保存の変更を保存しに行かないよう、開いていない状態にしてから開き直す
-    useSession.setState({ graphs, graphId: null, graph: null, savedGraph: null });
+    useStore.setState({ graphs, graphId: null, graph: null, savedGraph: null });
     await openGraph(graphs[0].id);
   });
 }
@@ -143,52 +143,52 @@ export async function openSession(sessionId: string): Promise<void> {
 
 /** 開いているグラフに空の会話を作って開く */
 export async function createSession(): Promise<void> {
-  const { graphId } = useSession.getState();
+  const { graphId } = useStore.getState();
   if (!graphId) return;
   await report(async () => {
     const session = await api.createSession(graphId);
-    useSession.setState((s) => ({ sessions: [session, ...s.sessions] }));
+    useStore.setState((s) => ({ sessions: [session, ...s.sessions] }));
     await openSession(session.id);
   });
 }
 
 /** 開いている会話を消し、残った会話の先頭を開く。1つも残らなければ空の会話を作って開く */
 export async function deleteSession(): Promise<void> {
-  const { graphId, sessionId } = useSession.getState();
+  const { graphId, sessionId } = useStore.getState();
   if (!graphId || !sessionId) return;
   await report(async () => {
     await api.deleteSession(sessionId);
-    const sessions = useSession.getState().sessions.filter((s) => s.id !== sessionId);
+    const sessions = useStore.getState().sessions.filter((s) => s.id !== sessionId);
     if (sessions.length === 0) sessions.push(await api.createSession(graphId));
-    useSession.setState({ sessions });
+    useStore.setState({ sessions });
     await openSession(sessions[0].id);
   });
 }
 
 /** 編集中のグラフを書き換える。サーバーへは保存せず、未保存の変更として持つ */
 export function updateGraph(update: (graph: GraphDefinition) => GraphDefinition): void {
-  useSession.setState((s) => (s.graph ? { graph: update(s.graph) } : {}));
+  useStore.setState((s) => (s.graph ? { graph: update(s.graph) } : {}));
 }
 
 /** 未保存の変更があればグラフに保存する。保存できなければ false */
 export async function saveGraph(): Promise<boolean> {
-  const { graphId, graph, savedGraph } = useSession.getState();
+  const { graphId, graph, savedGraph } = useStore.getState();
   if (!graphId || !graph || graph === savedGraph) return true;
   const saved = await report(() => api.updateGraph(graphId, { definition: graph }));
   if (!saved) return false;
   // 保存中にさらに編集されていたら、その分は未保存のまま残る
-  useSession.setState((s) => ({ savedGraph: graph, graphs: s.graphs.map((g) => (g.id === graphId ? saved : g)) }));
+  useStore.setState((s) => ({ savedGraph: graph, graphs: s.graphs.map((g) => (g.id === graphId ? saved : g)) }));
   return true;
 }
 
 /** グラフの未保存の変更を捨て、最後に保存した構成に戻す */
 export function discardGraphChanges(): void {
-  useSession.setState((s) => ({ graph: s.savedGraph }));
+  useStore.setState((s) => ({ graph: s.savedGraph }));
 }
 
 /** 表示中の分岐の末尾に発言を追加して実行する */
 export async function send(userText: string): Promise<void> {
-  await startTurn(useSession.getState().activeTurnId, userText);
+  await startTurn(useStore.getState().activeTurnId, userText);
 }
 
 /**
@@ -201,17 +201,17 @@ export async function branchFrom(turn: TurnRecord, userText = turn.userText): Pr
 
 /** turnId を含む分岐に表示を切り替える。turnId から先は、それぞれ最も新しい子をたどった末端まで表示する */
 export async function showBranch(turnId: string): Promise<void> {
-  const { sessionId, turns } = useSession.getState();
+  const { sessionId, turns } = useStore.getState();
   if (!sessionId) return;
   const leaf = latestLeafOf(turns, turnId);
-  useSession.setState({ activeTurnId: leaf });
+  useStore.setState({ activeTurnId: leaf });
   for (const turn of turnPath(turns, leaf)) follow(turn.id);
   await report(() => api.updateSession(sessionId, { activeTurnId: leaf }));
 }
 
 /** グラフ欄に turnId の実行時のグラフを表示する。null なら編集中のグラフに戻す */
 export function showTurnGraph(turnId: string | null): void {
-  useSession.setState({ viewingTurnId: turnId });
+  useStore.setState({ viewingTurnId: turnId });
 }
 
 /** 実行中のターンの中断を要求する。中断の結果は購読中のイベントで届く */
@@ -221,17 +221,17 @@ export async function abort(turnId: string): Promise<void> {
 
 /** 表示中のエラーを消す */
 export function dismissError(): void {
-  useSession.setState({ error: null });
+  useStore.setState({ error: null });
 }
 
 /** 実行はサーバー上のグラフで行われるため、未保存の編集を先に保存する */
 async function startTurn(parentTurnId: string | null, userText: string): Promise<void> {
   if (!(await saveGraph())) return;
-  const { sessionId } = useSession.getState();
+  const { sessionId } = useStore.getState();
   if (!sessionId) return;
   await report(async () => {
     const turn = await api.createTurn(sessionId, parentTurnId, userText);
-    useSession.setState((s) => ({ turns: [...s.turns, turn], activeTurnId: turn.id }));
+    useStore.setState((s) => ({ turns: [...s.turns, turn], activeTurnId: turn.id }));
     follow(turn.id);
   });
 }
@@ -239,7 +239,7 @@ async function startTurn(parentTurnId: string | null, userText: string): Promise
 /** 会話の内容を表示に読み込み、表示中の分岐のイベントを購読し直す */
 function showSession(detail: SessionDetail): void {
   stopFollowingAll();
-  useSession.setState({
+  useStore.setState({
     sessionId: detail.id,
     turns: detail.turns,
     activeTurnId: detail.activeTurnId,
@@ -254,7 +254,7 @@ const following = new Map<string, () => void>();
 
 function follow(turnId: string): void {
   // 終わったターンのイベントは取り込み済みなら変わらないので、購読し直さない
-  if (following.has(turnId) || useSession.getState().events[turnId]?.some((e) => e.type === 'turn.finish')) return;
+  if (following.has(turnId) || useStore.getState().events[turnId]?.some((e) => e.type === 'turn.finish')) return;
   following.set(turnId, api.followTurn(turnId, receive));
 }
 
@@ -264,7 +264,7 @@ function stopFollowingAll(): void {
 }
 
 function receive(event: RunEvent): void {
-  useSession.setState((s) => {
+  useStore.setState((s) => {
     if (event.type === 'text.delta') {
       const callId = event.callId!;
       return { liveText: { ...s.liveText, [callId]: (s.liveText[callId] ?? '') + event.text } };
@@ -288,7 +288,7 @@ async function report<T>(action: () => Promise<T>): Promise<T | undefined> {
   try {
     return await action();
   } catch (e) {
-    useSession.setState({ error: messageOf(e) });
+    useStore.setState({ error: messageOf(e) });
     return undefined;
   }
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { RunEvent, RunEventOf, TurnRecord } from 'protocol';
-import { siblingsOf } from '../session/branches.ts';
-import { branchFrom, showBranch, showTurnGraph, useSession } from '../session/store.ts';
+import { siblingsOf } from '../branches.ts';
+import { branchFrom, showBranch, showTurnGraph, useStore } from '../store.ts';
 import { Markdown } from '../ui/Markdown.tsx';
 import { CopyButton, ErrorNote } from '../ui/primitives.tsx';
 import { CallTree } from './CallTree.tsx';
@@ -12,7 +12,7 @@ import { buildTurnTree, type TurnLog } from './turnTree.ts';
  * 発言の編集・再実行による分岐の作成と、同じ親から分かれた分岐の切り替えもここで受け付ける
  */
 export function TurnView({ turn, busy }: { turn: TurnRecord; busy: boolean }) {
-  const events = useSession((s) => s.events[turn.id]);
+  const events = useStore((s) => s.events[turn.id]);
   const { calls, totals, logs } = useMemo(() => buildTurnTree(events ?? []), [events]);
   const turnError = finishErrorOf(events);
   const [editing, setEditing] = useState(false);
@@ -57,7 +57,7 @@ const messageActions = 'mt-0.5 mb-2 flex gap-1 opacity-0 group-hover:opacity-100
 
 /** 同じ親から分かれた発言が複数あるとき、どれを表示するかの切り替え */
 function BranchSwitcher({ turn }: { turn: TurnRecord }) {
-  const turns = useSession((s) => s.turns);
+  const turns = useStore((s) => s.turns);
   const siblings = siblingsOf(turns, turn);
   if (siblings.length < 2) return null;
   const index = siblings.findIndex((t) => t.id === turn.id);

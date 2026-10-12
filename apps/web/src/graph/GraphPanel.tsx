@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Allotment } from 'allotment';
 import { ReactFlowProvider } from '@xyflow/react';
 import { diagnoseGraph, type GraphWarning, type TurnRecord } from 'protocol';
-import { showTurnGraph, useSession } from '../session/store.ts';
+import { showTurnGraph, useStore } from '../store.ts';
 import { EmptyNote } from '../ui/primitives.tsx';
 import { Canvas } from './Canvas.tsx';
 import { Inspector } from './Inspector.tsx';
@@ -15,10 +15,10 @@ export type Selection = { nodeId: string } | { edgeId: string } | null;
  * ターンの実行時のグラフを表示しているときは、そのログを読み取り専用で表示する。
  */
 export function GraphPanel() {
-  const graph = useSession((s) => s.graph);
-  const graphId = useSession((s) => s.graphId);
-  const viewingTurn = useSession((s) => s.turns.find((t) => t.id === s.viewingTurnId));
-  const models = useSession((s) => s.models);
+  const graph = useStore((s) => s.graph);
+  const graphId = useStore((s) => s.graphId);
+  const viewingTurn = useStore((s) => s.turns.find((t) => t.id === s.viewingTurnId));
+  const models = useStore((s) => s.models);
   const [selection, setSelection] = useState<Selection>(null);
   const definition = viewingTurn?.graph ?? graph;
   const warningsOf = useMemo(() => warningLookup(definition ? diagnoseGraph(definition, models) : []), [definition, models]);

@@ -1,6 +1,6 @@
 import { useId, type ReactNode } from 'react';
 import type { ModelInfo, ModelProvider } from 'protocol';
-import { useSession } from '../session/store.ts';
+import { useStore } from '../store.ts';
 
 /** インスペクタ内の小見出し */
 export function SectionHeading({ children }: { children: ReactNode }) {
@@ -87,8 +87,8 @@ export function ChecklistField<T extends string>(props: {
 /** provider のモデル一覧から選ぶ。一覧にない ID も入力できる */
 export function ModelField(props: { provider: ModelProvider; value: string; onChange: (value: string) => void }) {
   const listId = useId();
-  const models = useSession((s) => s.models[props.provider]);
-  const error = useSession((s) => s.modelErrors[props.provider]);
+  const models = useStore((s) => s.models[props.provider]);
+  const error = useStore((s) => s.modelErrors[props.provider]);
   const model = models?.find((m) => m.id === props.value);
   return (
     <Field label="モデル">

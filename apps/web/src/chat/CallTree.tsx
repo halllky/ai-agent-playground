@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { GraphDefinition, RunStatus, StepRecord } from 'protocol';
 import { nodeTitle } from '../graph/kinds/index.ts';
-import { useSession } from '../session/store.ts';
+import { useStore } from '../store.ts';
 import { Markdown } from '../ui/Markdown.tsx';
 import { CodeBlock, Disclosure, ErrorNote, Pending } from '../ui/primitives.tsx';
 import { formatDuration, metricsOf, TotalsLine, type Totals } from './totals.tsx';
@@ -63,7 +63,7 @@ function CallBody({ call, graph }: { call: CallView; graph: GraphDefinition }) {
 function Step({ callId, step, graph }: { callId: string; step: StepView; graph: GraphDefinition }) {
   const { record } = step;
   // 生成中のテキストは結果が届いていないステップだけが読む。届いたステップは text.delta のたびに描画し直さずに済む
-  const liveText = useSession((s) => (record ? undefined : s.liveText[callId]));
+  const liveText = useStore((s) => (record ? undefined : s.liveText[callId]));
   return (
     <>
       <StepEntry step={step} />

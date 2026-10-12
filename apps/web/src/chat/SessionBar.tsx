@@ -1,12 +1,12 @@
 import { PlusIcon, TrashIcon } from '@heroicons/react/16/solid';
-import { createSession, deleteSession, openSession, useSession } from './store.ts';
+import { createSession, deleteSession, openSession, useStore } from '../store.ts';
 
 /** 開いているグラフの会話の切り替え・作成・削除 */
 export function SessionBar() {
-  const sessions = useSession((s) => s.sessions);
-  const sessionId = useSession((s) => s.sessionId);
+  const sessions = useStore((s) => s.sessions);
+  const sessionId = useStore((s) => s.sessionId);
   const session = sessions.find((s) => s.id === sessionId);
-  const running = useSession((s) => s.turns.some((t) => t.status === 'running'));
+  const running = useStore((s) => s.turns.some((t) => t.status === 'running'));
 
   return (
     <div className="flex items-center gap-2 border-b px-2 py-1">

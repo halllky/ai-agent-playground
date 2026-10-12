@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { Allotment, LayoutPriority } from 'allotment';
 import type { TurnFiles } from 'protocol';
 import { api } from '../api.ts';
+import { useStore } from '../store.ts';
 import { Markdown } from '../ui/Markdown.tsx';
-import { useSession } from '../session/store.ts';
 import { CodeBlock, EmptyNote, ErrorNote } from '../ui/primitives.tsx';
 import { FileTree } from './FileTree.tsx';
 
@@ -12,10 +12,10 @@ import { FileTree } from './FileTree.tsx';
  * 実行中は、ツールの実行が終わるたびに取り直す。
  */
 export function FilePanel() {
-  const activeTurnId = useSession((s) => s.activeTurnId);
+  const activeTurnId = useStore((s) => s.activeTurnId);
   // ターン中のファイルの変更はツールの実行で起きるので、ツールの結果の数を取り直す目印にする。
   // 設定から写した初期ファイルはツールを介さないため、ターンの終了でも取り直す
-  const revision = useSession((s) => {
+  const revision = useStore((s) => {
     const events = s.activeTurnId ? (s.events[s.activeTurnId] ?? []) : [];
     return `${events.filter((e) => e.type === 'tool.result').length}:${events.some((e) => e.type === 'turn.finish')}`;
   });

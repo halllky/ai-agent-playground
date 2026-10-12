@@ -1,25 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Allotment, LayoutPriority } from 'allotment';
 import type { TurnRecord } from 'protocol';
-import { turnPath } from '../session/branches.ts';
-import { SessionBar } from '../session/SessionBar.tsx';
-import { abort, send, useSession } from '../session/store.ts';
+import { turnPath } from '../branches.ts';
+import { FilePanel } from '../files/FilePanel.tsx';
+import { abort, send, useStore } from '../store.ts';
+import { SessionBar } from './SessionBar.tsx';
 import { TotalsLine, totalsOf } from './totals.tsx';
 import { TurnView } from './TurnView.tsx';
-import { Allotment, LayoutPriority } from 'allotment';
-import { FilePanel } from '../files/FilePanel.tsx';
 
 /**
- * 会話の切り替えと、表示中の分岐の会話、発言の入力欄。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。
+ * 会話の切り替えと、表示中の分岐の会話、発言の入力欄、表示中のターン時点のファイル。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。
  * 過去の発言からは、編集して再送信・再実行で分岐を作り、分岐を切り替えて閲覧できる。
  * 実行は1セッションに1つまでとし、実行中は送信・分岐の作成をできなくする。
  */
 export function ChatPanel() {
-  const turns = useSession((s) => s.turns);
-  const activeTurnId = useSession((s) => s.activeTurnId);
+  const turns = useStore((s) => s.turns);
+  const activeTurnId = useStore((s) => s.activeTurnId);
   const path = useMemo(() => turnPath(turns, activeTurnId), [turns, activeTurnId]);
   const runningTurn = turns.find((t) => t.status === 'running');
   const bottomRef = useRef<HTMLDivElement>(null);
-  const eventCount = useSession((s) => (activeTurnId ? (s.events[activeTurnId]?.length ?? 0) : 0));
+  const eventCount = useStore((s) => (activeTurnId ? (s.events[activeTurnId]?.length ?? 0) : 0));
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
@@ -51,7 +51,7 @@ export function ChatPanel() {
 
 /** 表示中の分岐の全ターンを通したステップの集計 */
 function BranchTotals({ path }: { path: TurnRecord[] }) {
-  const events = useSession((s) => s.events);
+  const events = useStore((s) => s.events);
   const totals = useMemo(() => totalsOf(path.flatMap((t) => (events[t.id] ?? []).flatMap((e) => (e.type === 'step.finish' ? [e.step] : [])))), [path, events]);
   if (totals.steps === 0) return null;
   return <TotalsLine className="flex border-b px-2 py-0.5 text-muted" totals={totals} />;

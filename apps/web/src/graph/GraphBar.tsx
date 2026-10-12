@@ -1,14 +1,13 @@
 import { PencilIcon, PlusIcon, TrashIcon } from '@heroicons/react/16/solid';
-import { createGraph, deleteGraph, discardGraphChanges, dismissError, hasUnsavedGraph, openGraph, renameGraph, saveGraph, useSession } from './store.ts';
+import { createGraph, deleteGraph, discardGraphChanges, hasUnsavedGraph, openGraph, renameGraph, saveGraph, useStore } from '../store.ts';
 
 /** グラフの切り替え・作成・名前変更・削除と、編集中のグラフの保存 */
-export function TopBar() {
-  const graphs = useSession((s) => s.graphs);
-  const graphId = useSession((s) => s.graphId);
-  const unsaved = useSession(hasUnsavedGraph);
-  const error = useSession((s) => s.error);
+export function GraphBar() {
+  const graphs = useStore((s) => s.graphs);
+  const graphId = useStore((s) => s.graphId);
+  const unsaved = useStore(hasUnsavedGraph);
   const graph = graphs.find((g) => g.id === graphId);
-  const running = useSession((s) => s.turns.some((t) => t.status === 'running'));
+  const running = useStore((s) => s.turns.some((t) => t.status === 'running'));
 
   return (
     <header className="flex items-center gap-2 border-b bg-surface-sub px-2.5 py-1.5">
@@ -62,12 +61,6 @@ export function TopBar() {
       <button title="Ctrl+S" disabled={!unsaved} onClick={() => void saveGraph()}>
         保存
       </button>
-
-      {error && (
-        <div className="ml-auto max-w-[50%] cursor-pointer truncate text-danger" onClick={dismissError} title="クリックで閉じる">
-          {error}
-        </div>
-      )}
     </header>
   );
 }

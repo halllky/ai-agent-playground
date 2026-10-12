@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { removeEdges, removeNodes, type GraphDefinition, type GraphWarning } from 'protocol';
-import { updateGraph } from '../session/store.ts';
+import { updateGraph } from '../store.ts';
 import { Hint, NumberField } from './fields.tsx';
 import type { Selection } from './GraphPanel.tsx';
 import { edgeKindView, nodeKindView } from './kinds/index.ts';
