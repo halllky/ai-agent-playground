@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Allotment } from 'allotment';
+import { Allotment, LayoutPriority } from 'allotment';
 import type { TurnFiles } from 'protocol';
 import { api } from '../api.ts';
 import { Markdown } from '../ui/Markdown.tsx';
@@ -49,8 +49,8 @@ export function FilePanel() {
     <div className="flex h-full flex-col border-l">
       <div className="border-b px-2.5 py-1.5 font-semibold">ワークフォルダ</div>
       <div className="min-h-0 flex-1">
-        <Allotment vertical defaultSizes={[40, 60]}>
-          <Allotment.Pane minSize={60}>
+        <Allotment vertical proportionalLayout={false}>
+          <Allotment.Pane minSize={60} priority={LayoutPriority.Low}>
             <div className={paneBody}>
               {error && <ErrorNote>{error}</ErrorNote>}
               {paths.length === 0 && !error && <EmptyNote>まだファイルはありません</EmptyNote>}

@@ -5,6 +5,8 @@ import { SessionBar } from '../session/SessionBar.tsx';
 import { abort, send, useSession } from '../session/store.ts';
 import { TotalsLine, totalsOf } from './totals.tsx';
 import { TurnView } from './TurnView.tsx';
+import { Allotment, LayoutPriority } from 'allotment';
+import { FilePanel } from '../files/FilePanel.tsx';
 
 /**
  * 会話の切り替えと、表示中の分岐の会話、発言の入力欄。返答は Markdown で表示し、ノードの呼び出しは入れ子で表示する。
@@ -26,14 +28,23 @@ export function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       <SessionBar />
-      <BranchTotals path={path} />
-      <div className="flex-1 overflow-y-auto p-3">
-        {path.map((turn) => (
-          <TurnView key={turn.id} turn={turn} busy={runningTurn !== undefined} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
-      <Composer running={runningTurn} />
+      <Allotment defaultSizes={[70, 30]}>
+        <Allotment.Pane>
+          <div className="flex h-full flex-col">
+            <BranchTotals path={path} />
+            <div className="flex-1 overflow-y-auto p-3">
+              {path.map((turn) => (
+                <TurnView key={turn.id} turn={turn} busy={runningTurn !== undefined} />
+              ))}
+              <div ref={bottomRef} />
+            </div>
+            <Composer running={runningTurn} />
+          </div>
+        </Allotment.Pane>
+        <Allotment.Pane snap priority={LayoutPriority.Low}>
+          <FilePanel />
+        </Allotment.Pane>
+      </Allotment>
     </div>
   );
 }

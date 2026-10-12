@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
-import { Allotment } from 'allotment';
+import { Allotment, LayoutPriority } from 'allotment';
 import { ChatPanel } from './chat/ChatPanel.tsx';
-import { FilePanel } from './files/FilePanel.tsx';
 import { GraphPanel } from './graph/GraphPanel.tsx';
 import { hasUnsavedGraph, saveGraph, useSession } from './session/store.ts';
 import { TopBar } from './session/TopBar.tsx';
@@ -13,15 +12,12 @@ export function App() {
     <div className="flex h-full flex-col">
       <TopBar />
       <div className="min-h-0 flex-1">
-        <Allotment defaultSizes={[40, 40, 20]}>
+        <Allotment proportionalLayout={false}>
           <Allotment.Pane minSize={200}>
             <GraphPanel />
           </Allotment.Pane>
-          <Allotment.Pane minSize={260}>
+          <Allotment.Pane minSize={200} priority={LayoutPriority.Low}>
             <ChatPanel />
-          </Allotment.Pane>
-          <Allotment.Pane minSize={140}>
-            <FilePanel />
           </Allotment.Pane>
         </Allotment>
       </div>

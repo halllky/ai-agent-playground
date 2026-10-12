@@ -1,4 +1,4 @@
-import { TrashIcon } from '@heroicons/react/16/solid';
+import { PencilIcon, PlusIcon, TrashIcon } from '@heroicons/react/16/solid';
 import { createGraph, deleteGraph, discardGraphChanges, dismissError, hasUnsavedGraph, openGraph, renameGraph, saveGraph, useSession } from './store.ts';
 
 /** グラフの切り替え・作成・名前変更・削除と、編集中のグラフの保存 */
@@ -19,28 +19,36 @@ export function TopBar() {
           </option>
         ))}
       </select>
-      <button title="今のグラフを複製した新しいグラフを作る" onClick={() => void createGraph()}>
-        新規
-      </button>
       <button
+        className="self-stretch px-1.5"
         disabled={!graph}
+        title="名前変更"
+        aria-label="名前変更"
         onClick={() => {
           const name = graph && prompt('グラフの名前', graph.name)?.trim();
           if (name && name !== graph.name) void renameGraph(name);
         }}
       >
-        名前変更
+        <PencilIcon className="size-3.5" />
       </button>
       <button
         className="self-stretch px-1.5 text-danger"
-        title={running ? '実行中は削除できません' : 'このグラフを削除'}
-        aria-label="このグラフを削除"
+        title={running ? '実行中は削除できません' : '削除'}
+        aria-label="削除"
         disabled={!graph || running}
         onClick={() => {
           if (graph && confirm(`グラフ「${graph.name}」を削除しますか？\nこのグラフの会話・ターン・ファイルもすべて消え、元に戻せません。`)) void deleteGraph();
         }}
       >
         <TrashIcon className="size-3.5" />
+      </button>
+      <div className="basis-2"></div>
+      <button
+        title="新規"
+        className="self-stretch px-1.5"
+        onClick={() => void createGraph()}
+      >
+        <PlusIcon className="size-3.5" />
       </button>
       <div className="flex-1"></div>
       <button

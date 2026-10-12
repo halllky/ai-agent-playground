@@ -1,4 +1,4 @@
-import { TrashIcon } from '@heroicons/react/16/solid';
+import { PlusIcon, TrashIcon } from '@heroicons/react/16/solid';
 import { createSession, deleteSession, openSession, useSession } from './store.ts';
 
 /** 開いているグラフの会話の切り替え・作成・削除 */
@@ -17,9 +17,6 @@ export function SessionBar() {
           </option>
         ))}
       </select>
-      <button title="このグラフで新しい会話を始める" onClick={() => void createSession()}>
-        新規
-      </button>
       <button
         className="self-stretch px-1.5 text-danger"
         title={running ? '実行中は削除できません' : 'この会話を削除'}
@@ -30,6 +27,14 @@ export function SessionBar() {
         }}
       >
         <TrashIcon className="size-3.5" />
+      </button>
+      <div className="basis-2"></div>
+      <button
+        title="新規"
+        className="self-stretch px-1.5"
+        onClick={() => void createSession()}
+      >
+        <PlusIcon className="size-3.5" />
       </button>
     </div>
   );
