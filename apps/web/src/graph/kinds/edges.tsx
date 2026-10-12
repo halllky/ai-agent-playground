@@ -1,5 +1,6 @@
 import {
   accessPermissions,
+  callMemoryModes,
   judgeAnswerOptions,
   replaceEdge,
   replaceNode,
@@ -38,7 +39,7 @@ export const toolEdgeView: EdgeKindView<'tool'> = {
             agent={target}
             onGraphChange={onGraphChange}
           />
-          <MemoryField modes={['none', 'turn', 'session']} value={edge.memory} onChange={(memory) => onChange({ ...edge, memory })} />
+          <MemoryField value={edge.memory} onChange={(memory) => onChange({ ...edge, memory })} />
         </>
       )}
     </>
@@ -67,24 +68,27 @@ export const accessEdgeView: EdgeKindView<'access'> = {
   },
 };
 
-/**
- * フローエッジの画面上の振る舞い。送り元がエージェントなら流すもの、判定ノードなら条件、送り先がエージェントなら依頼と応答の記憶を決める。
- * 記憶は送り先へ入るフローエッジでそろえる（フローからは1ターンに1回しか呼ばれないので、記憶はフローからの呼び出しで1つ）
- */
+/** フローエッジの画面上の振る舞い。送り元がエージェントなら流すもの、判定ノードなら送り先を動かす条件を決める */
 export const flowEdgeView: EdgeKindView<'flow'> = {
   label: (edge, { source }) => {
     const condition = edge.condition ? `${edge.condition.questionKey}: ${edge.condition.anyOf.join(' / ')}` : '';
-    const returns = source?.kind !== 'agent' ? '' : source.config.workOnly ? `${source.config.name} の入力をそのまま` : returnsLabels[edge.returns];
+    const returns = source?.kind !== 'agent' ? '' : source.config.workOnly ? '完了のみ' : returnsLabels[edge.returns];
     return [condition, returns].filter(Boolean).join(' · ');
   },
-  Inspector: ({ edge, source, target, onChange, onGraphChange }) => (
+  Inspector: ({ edge, source, onChange, onGraphChange }) => (
     <>
-      <Hint>送り元の出力を、送り先の入力として流します。ユーザーから流れをたどれるノードが、流れの順に1回ずつ実行されます。何も流れてこなかったノードは実行しません。</Hint>
-      {target?.kind === 'agent' && <Hint>流れてきたものが、送り先のエージェントへの依頼になります。</Hint>}
+      {source?.kind === 'userInput' ? (
+        <Hint>ターンの最初に送り先を動かします。発言そのものは流れず、送り先の「ユーザーとの会話」の設定で見せます。</Hint>
+      ) : (
+        <Hint>
+          送り元が終わったら送り先を動かし、送り元の出力を送り先の入力として流します。ユーザー入力から流れをたどれるノードが、流れの順に1回ずつ実行されます。
+          動かす前段が無かったノードは実行しません。
+        </Hint>
+      )}
       {source?.kind === 'agent' && (
         <ReturnsField
           label="送り元が流すもの"
-          workOnlyLabel="受け取った入力をそのまま（作業だけして終わる）"
+          workOnlyLabel="なし（作業だけして終わる。後段には終わったことだけを伝える）"
           edge={edge}
           agent={source}
           onGraphChange={onGraphChange}
@@ -92,13 +96,6 @@ export const flowEdgeView: EdgeKindView<'flow'> = {
       )}
       {source?.kind === 'judge' && (
         <FlowConditionFields questions={source.config.questions} condition={edge.condition} onChange={(condition) => onChange({ ...edge, condition })} />
-      )}
-      {target?.kind === 'agent' && (
-        <MemoryField
-          modes={['none', 'session']}
-          value={edge.memory === 'session' ? 'session' : 'none'}
-          onChange={(memory) => onGraphChange((graph) => withFlowMemory(graph, target.id, memory))}
-        />
       )}
     </>
   ),
@@ -140,27 +137,18 @@ function ReturnsField(props: {
   );
 }
 
-/** 送り先のエージェントへの、これまでの依頼と応答を含めるか。modes は選べる範囲 */
-function MemoryField<T extends CallMemoryMode>(props: { modes: T[]; value: T; onChange: (memory: T) => void }) {
+/** 送り先のエージェントへの、これまでの依頼と応答を含めるか */
+function MemoryField(props: { value: CallMemoryMode; onChange: (memory: CallMemoryMode) => void }) {
   return (
     <>
-      <SelectField
-        label="これまでの依頼と応答を含める"
-        value={props.value}
-        options={props.modes.map((value) => ({ value, label: memoryLabels[value] }))}
-        onChange={props.onChange}
-      />
+      <SelectField label="これまでの依頼と応答を含める" value={props.value} options={memoryOptions} onChange={props.onChange} />
       <Hint>この呼び出し元からの依頼と、それへの応答（ツールの呼び出しと結果を含む）を、次の呼び出しのときに会話の続きとして渡します。</Hint>
     </>
   );
 }
 
 const memoryLabels: Record<CallMemoryMode, string> = { none: '含めない', turn: 'このターンの分', session: 'このセッションの分' };
-
-/** nodeId のノードへ入るフローエッジの記憶を、すべて memory にそろえたグラフ */
-function withFlowMemory(graph: GraphDefinition, nodeId: string, memory: CallMemoryMode): GraphDefinition {
-  return { ...graph, edges: graph.edges.map((e) => (e.kind === 'flow' && e.target === nodeId ? { ...e, memory } : e)) };
-}
+const memoryOptions = callMemoryModes.map((value) => ({ value, label: memoryLabels[value] }));
 
 /** 判定ノードから出るフローの条件。質問を選ぶと、まずその質問の最初の回答だけを流す条件にする */
 function FlowConditionFields(props: {

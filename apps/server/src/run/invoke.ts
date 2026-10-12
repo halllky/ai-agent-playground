@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage, Tool, ToolSet } from 'ai';
 import {
-  flowMemoryOf,
   isInvocable,
   type EdgeOf,
   type GraphDefinition,
@@ -12,7 +11,8 @@ import {
   type RunStatus,
 } from 'protocol';
 import type { TurnState } from '../db/index.ts';
-import { agentTool, invokeAgent, type CallMemory } from './nodes/agent.ts';
+import { conversationOf, type PastTurn } from './conversation.ts';
+import { agentTool, invokeAgent } from './nodes/agent.ts';
 import { Workfolder, workfolderTools } from './nodes/files.ts';
 import { judge, judgeTool, type Verdict } from './nodes/judge.ts';
 import { search, webSearchTool } from './nodes/webSearch.ts';
@@ -25,8 +25,10 @@ export type RunScope = {
   state: TurnState;
   saveState(): void;
   /** ユーザーとの会話のうち、前のターンまでの発言と返答 */
-  conversation: ModelMessage[];
-  /** ターン内でだけ持ち越す、記憶の key ごとの呼び出しの依頼と応答 */
+  pastTurns: PastTurn[];
+  /** 今回のユーザーの発言 */
+  userText: string;
+  /** ターン内でだけ持ち越す、ツールエッジごとの呼び出しの依頼と応答 */
   turnMemory: Map<string, ModelMessage[]>;
   emit(header: CallHeader, body: RunEventBody): void;
 };
@@ -100,11 +102,12 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
   switch (node.kind) {
     case 'agent': {
       const tools = toolsFor(scope, node, header.callId, inv.depth);
-      const outcome = await invokeAgent(scope, node, inv.input, memoryOf(scope.graph, inv), tools, (body) => scope.emit(header, body));
+      const memory = inv.toolEdge && { mode: inv.toolEdge.memory, key: inv.toolEdge.id };
+      const outcome = await invokeAgent(scope, node, inv.input, memory, tools, (body) => scope.emit(header, body));
       return { ...outcome, verdict: null };
     }
     case 'judge': {
-      const verdict = await judge(node, inv.input, scope.signal);
+      const verdict = await judge(node, judgeStateOf(scope, inv, node), scope.signal);
       const output = JSON.stringify(verdict.answers, null, 2);
       return { status: 'done', output, stepsOutput: output, verdict, error: null };
     }
@@ -115,10 +118,13 @@ async function dispatch(scope: RunScope, inv: Invocation, header: CallHeader): P
   }
 }
 
-/** エージェントの呼び出しで使う、依頼と応答の記憶。ツールならツールエッジごと、フローならノードごとに分ける */
-function memoryOf(graph: GraphDefinition, inv: Invocation): CallMemory {
-  if (inv.toolEdge) return { mode: inv.toolEdge.memory, key: inv.toolEdge.id };
-  return { mode: flowMemoryOf(graph, inv.node.id), key: `flow:${inv.node.id}` };
+/**
+ * 判定に渡す state。見せる会話があれば、その記録を入力の前に置く。
+ * フローからなら今回の発言は入力に入っているので、記録には前のターンまでだけを入れる
+ */
+function judgeStateOf(scope: RunScope, inv: Invocation, node: NodeOf<'judge'>): string {
+  const transcript = conversationOf(scope, node).transcript(inv.toolEdge !== null);
+  return transcript ? `${transcript}\n\n<state>\n${inv.input}\n</state>` : inv.input;
 }
 
 /**

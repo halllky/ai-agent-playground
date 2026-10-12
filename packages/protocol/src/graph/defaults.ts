@@ -2,12 +2,12 @@ import { defaultModelOf } from '../model.ts';
 import type { EdgeKind, EdgeOf, GraphDefinition, GraphNode, NodeKind, NodeOf } from './schema.ts';
 
 /**
- * 新規グラフの既定の構成。ユーザーの発言をエージェント1つが受けて返し、エージェントはこの会話でのこれまでの依頼と応答を覚えている。
+ * 新規グラフの既定の構成。ユーザーの発言をエージェント1つが受けて返し、エージェントはユーザーとの会話をすべて見る。
  * フローが左から右へ流れるように並べ、空のワークフォルダをその下に置く
  */
 export function createDefaultGraph(): GraphDefinition {
   const agent = createNode('agent', 'assistant', { x: 300, y: 0 });
-  agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.' };
+  agent.config = { ...agent.config, name: 'assistant', systemPrompt: 'You are a helpful assistant.', conversation: 'all' };
   return {
     nodes: [
       createNode('userInput', 'input', { x: 0, y: 0 }),
@@ -16,19 +16,19 @@ export function createDefaultGraph(): GraphDefinition {
       createNode('workfolder', 'workfolder', { x: 300, y: 160 }),
     ],
     edges: [
-      { ...createEdge('flow', 'input-assistant', 'input', 'assistant'), memory: 'session' },
+      createEdge('flow', 'input-assistant', 'input', 'assistant'),
       createEdge('flow', 'assistant-output', 'assistant', 'output'),
     ],
     settings: { maxCallDepth: 5 },
   };
 }
 
-/** 既定の設定を持つ新しいノード */
+/** 既定の設定を持つ新しいノード。エージェントと判定は、ユーザーとの会話を見ない */
 export function createNode<K extends NodeKind>(kind: K, id: string, position: GraphNode['position']): NodeOf<K> {
   return nodeFactories[kind](id, position);
 }
 
-/** 既定の設定を持つ新しいエッジ。アクセスならワークフォルダ全体の参照のみでプロンプトには含めず、フローなら無条件。エージェントとの間では最後の応答文を渡し、記憶は持たない */
+/** 既定の設定を持つ新しいエッジ。アクセスならワークフォルダ全体の参照のみでプロンプトには含めず、フローなら無条件。エージェントとの間では最後の応答文を渡し、ツールなら記憶は持たない */
 export function createEdge<K extends EdgeKind>(kind: K, id: string, source: string, target: string): EdgeOf<K> {
   return edgeFactories[kind](id, source, target);
 }
@@ -47,7 +47,7 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
       systemPrompt: '',
       maxSteps: 10,
       conversation: 'none',
-      conversationLength: 2,
+      conversationLength: 1,
       workOnly: false,
     },
   }),
@@ -60,6 +60,8 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
       name: `judge_${id.slice(0, 4)}`,
       model: '',
       questions: [{ key: 'answer', type: 'noul', instructions: '', yes: '', no: '' }],
+      conversation: 'none',
+      conversationLength: 1,
     },
   }),
   webSearch: (id, position) => ({ id, kind: 'webSearch', position, config: { name: 'web_search', maxResults: 5, searchDepth: 'basic' } }),
@@ -68,5 +70,5 @@ const nodeFactories: { [K in NodeKind]: (id: string, position: GraphNode['positi
 const edgeFactories: { [K in EdgeKind]: (id: string, source: string, target: string) => EdgeOf<K> } = {
   tool: (id, source, target) => ({ id, kind: 'tool', source, target, description: '', returns: 'finalText', memory: 'none' }),
   access: (id, source, target) => ({ id, kind: 'access', source, target, entryId: null, permission: 'read', attach: false }),
-  flow: (id, source, target) => ({ id, kind: 'flow', source, target, condition: null, returns: 'finalText', memory: 'none' }),
+  flow: (id, source, target) => ({ id, kind: 'flow', source, target, condition: null, returns: 'finalText' }),
 };

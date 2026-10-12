@@ -5,8 +5,12 @@ import type { NodeKindView } from './index.ts';
 export const userInputView: NodeKindView<'userInput'> = {
   label: 'ユーザー入力',
   fixed: true,
-  summary: () => '発言の送り元',
-  Inspector: () => <Hint>ターンの発言はここから流れ出します。</Hint>,
+  summary: () => 'ターンの始まり',
+  Inspector: () => (
+    <Hint>
+      ここからフローでつないだノードが、ターンの最初に動きます。発言そのものは流れず、エージェントと判定がそれぞれの「ユーザーとの会話」の設定で見ます。
+    </Hint>
+  ),
 };
 
 /** ユーザー出力ノードの画面上の振る舞い */

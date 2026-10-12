@@ -1,5 +1,5 @@
 import { modelProviderLabels, type ModelInfo, type ModelProvider } from '../model.ts';
-import { canConnect, flowMemoryOf, flowOrder } from './connections.ts';
+import { canConnect, flowOrder } from './connections.ts';
 import { judgeAnswerOptions, type EdgeOf, type GraphDefinition, type GraphNode, type JudgeQuestion, type NodeOf, type WorkfolderEntry } from './schema.ts';
 import { agentToolNames, toolNamePattern } from './tools.ts';
 import { entryNameError, entryPath, filePathError, scopeOf } from './workfolder.ts';
@@ -35,6 +35,9 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
 
   for (const node of graph.nodes) {
     warnings.push(...configWarnings(node).map((message) => ({ target: { nodeId: node.id }, message })));
+    if (node.kind === 'agent' || node.kind === 'judge') {
+      warnings.push(...conversationWarnings(graph, node).map((message) => ({ target: { nodeId: node.id }, message })));
+    }
     if (node.kind !== 'agent') continue;
     const toolNames = agentToolNames(graph, node);
     const catalog = models[node.config.provider];
@@ -46,9 +49,6 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
       warnings.push({ target: { nodeId: node.id }, message: 'ツールコール非対応のモデルにツールが付いています' });
     }
     warnings.push(...duplicateToolNameWarnings(toolNames).map((message) => ({ target: { nodeId: node.id }, message })));
-    if (hasDuplicatedConversation(graph, node)) {
-      warnings.push({ target: { nodeId: node.id }, message: 'ユーザーとの会話と、ユーザー入力からの依頼と応答の両方に、同じ発言が入ります' });
-    }
   }
 
   for (const edge of graph.edges) {
@@ -58,7 +58,6 @@ export function diagnoseGraph(graph: GraphDefinition, models: Partial<Record<Mod
       warnings.push({ target: { edgeId: edge.id }, message: 'このノード同士は接続できません' });
     } else if (edge.kind === 'flow') {
       warnings.push(...flowConditionWarnings(edge, source).map((message) => ({ target: { edgeId: edge.id }, message })));
-      if (edge.memory === 'turn') warnings.push({ target: { edgeId: edge.id }, message: 'フローでは「このターンの分」の依頼と応答は使われません' });
     } else if (edge.kind === 'access') {
       warnings.push(...accessWarnings(edge, target).map((message) => ({ target: { edgeId: edge.id }, message })));
     }
@@ -85,11 +84,19 @@ function configWarnings(node: GraphNode): string[] {
 
 const toolNameMessage = 'ツール名は半角英数字・_・- の64文字以内にしてください';
 
-/** ユーザー入力から直接流れてくる依頼と応答を覚えたうえで、ユーザーとの会話も含めるため、同じ発言が二重に入るか */
-function hasDuplicatedConversation(graph: GraphDefinition, agent: NodeOf<'agent'>): boolean {
-  if (agent.config.conversation === 'none' || flowMemoryOf(graph, agent.id) !== 'session') return false;
-  const inputIds = new Set(graph.nodes.filter((n) => n.kind === 'userInput').map((n) => n.id));
-  return graph.edges.some((e) => e.kind === 'flow' && e.target === agent.id && inputIds.has(e.source));
+/**
+ * ユーザーとの会話の設定の問題。会話を見ないのに、フローの前段がユーザー入力か作業だけして終わるエージェントだけなら、入力が空になる。
+ * 判定は入力に上限があるので、会話をすべて含めると長い会話で判定できなくなる
+ */
+function conversationWarnings(graph: GraphDefinition, node: NodeOf<'agent'> | NodeOf<'judge'>): string[] {
+  const messages: string[] = [];
+  const sources = graph.edges.filter((e) => e.kind === 'flow' && e.target === node.id).map((e) => graph.nodes.find((n) => n.id === e.source));
+  const flowsNothing = (source: GraphNode | undefined) => source?.kind === 'userInput' || (source?.kind === 'agent' && source.config.workOnly);
+  if (node.config.conversation === 'none' && sources.length > 0 && sources.every(flowsNothing)) {
+    messages.push('ユーザーとの会話を含めず、前段からも何も流れてこないため、入力が空になります');
+  }
+  if (node.kind === 'judge' && node.config.conversation === 'all') messages.push('会話が長くなると、判定の入力の上限を超えて判定できなくなります');
+  return messages;
 }
 
 function accessWarnings(edge: EdgeOf<'access'>, target: GraphNode): string[] {

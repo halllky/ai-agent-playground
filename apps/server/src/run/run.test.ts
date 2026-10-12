@@ -6,7 +6,6 @@ import {
   createEdge,
   createNode,
   type AccessPermission,
-  type CallMemoryMode,
   type EdgeOf,
   type GraphDefinition,
   type JudgeQuestion,
@@ -455,7 +454,7 @@ describe('ターン実行', () => {
     expect(listDescription).not.toContain('秘密');
   });
 
-  it('ユーザーとの会話の直近の発言を今回のメッセージの先頭に、プロンプトに含めるフォルダのファイル・依頼と並べ、権限が無ければファイルのツールは渡さない', async () => {
+  it('フローから呼ばれたエージェントには、ユーザーとの会話の直近の往復を対話として前に並べ、今回のメッセージにはプロンプトに含めるフォルダのファイルと発言を並べ、権限が無ければファイルのツールは渡さない', async () => {
     const prompts: string[][] = [];
     let toolNames: string[] = [];
     scripts.set('main', (prompt, options) => {
@@ -463,9 +462,7 @@ describe('ターン実行', () => {
       toolNames = (options.tools ?? []).map((t) => t.name);
       return streamOf(textParts(`返事${prompts.length}`));
     });
-    const graph = graphWithMain('none');
-    const main = graph.nodes.find((n) => n.id === 'main') as NodeOf<'agent'>;
-    main.config = { ...main.config, conversation: 'recent', conversationLength: 2 };
+    const graph = graphWithMain({ conversation: 'recent', conversationLength: 1 });
     workfolderOf(graph).config.entries = [
       folderEntry('notes', 'notes'),
       fileEntry('summary', '概要.md', '# 概要', 'notes'),
@@ -480,8 +477,9 @@ describe('ターン実行', () => {
     await runTurn(graph, '三つ目', undefined, { sessionId, parentTurnId: second[0].turnId });
 
     expect(prompts[2]).toEqual([
+      '二つ目',
+      '返事2',
       [
-        '<conversation>\n[user] 二つ目\n[assistant] 返事2\n</conversation>',
         '<file path="notes/概要.md">\n# 概要\n</file>',
         '<file path="notes/詳細.md">\n# 詳細\n</file>',
         '<task>\n三つ目\n</task>',
@@ -504,7 +502,7 @@ describe('ターン実行', () => {
           : textParts('ok'),
       );
     });
-    const graph = graphWithMain('none');
+    const graph = graphWithMain(currentOnly);
     workfolderOf(graph).config.entries = [folderEntry('notes', 'notes'), fileEntry('plan', '計画.md', '# 計画')];
     graph.edges.push(accessEdge('main', 'notes', 'write', true), accessEdge('main', 'plan', 'write', true));
     const sessionId = createSession(graph);
@@ -518,7 +516,7 @@ describe('ターン実行', () => {
     ]);
   });
 
-  it('フローからの依頼と応答を覚えるなら、前回までの依頼と応答だけを残し、プロンプトに含めるファイルは毎回その時点の中身にする', async () => {
+  it('フローから呼ばれたエージェントには、前のターンを発言と返答の対話として並べ、プロンプトに含めるファイルは今回のメッセージにだけ入れる', async () => {
     const prompts: string[][] = [];
     scripts.set('main', (prompt) => {
       prompts.push(prompt.flatMap((m) => (m.role === 'user' || m.role === 'assistant' ? [textOf(m.content)] : [])));
@@ -535,7 +533,7 @@ describe('ターン実行', () => {
     expect(prompts[1]).toEqual(['一つ目', '返事1', '<file path="概要.md">\n# 概要\n</file>\n\n<task>\n二つ目\n</task>']);
   });
 
-  it('ツールとして呼ばれたエージェントに含める会話は、呼び出し元のやりとりではなくユーザーとの会話', async () => {
+  it('ツールとして呼ばれたエージェントには、ユーザーとの会話を今回の発言まで記録として入れる', async () => {
     const subPrompts: string[] = [];
     scripts.set('main', (prompt) =>
       lastIsToolResult(prompt) ? streamOf(textParts('ok')) : streamOf(toolCallParts([{ name: 'researcher', input: { task: '調べて' } }])),
@@ -550,17 +548,22 @@ describe('ターン実行', () => {
     const first = await runTurn(graph, '旅行の計画を立てたい', undefined, { sessionId, parentTurnId: null });
     await runTurn(graph, '京都にしたい', undefined, { sessionId, parentTurnId: first[0].turnId });
 
-    expect(subPrompts).toEqual(['調べて', '<conversation>\n[user] 旅行の計画を立てたい\n[assistant] ok\n</conversation>\n\n<task>\n調べて\n</task>']);
+    expect(subPrompts).toEqual([
+      '<conversation>\n[user] 旅行の計画を立てたい\n</conversation>\n\n<task>\n調べて\n</task>',
+      '<conversation>\n[user] 旅行の計画を立てたい\n[assistant] ok\n[user] 京都にしたい\n</conversation>\n\n<task>\n調べて\n</task>',
+    ]);
   });
 
-  it('作業だけして終わるなら、終了用のツールで応答を待たずに終え、受け取った入力を後段へそのまま流す', async () => {
+  it('作業だけして終わるなら、終了用のツールで応答を待たずに終え、後段を動かすが何も流さない', async () => {
     const mainPrompts: string[] = [];
+    const secretaryPrompts: string[] = [];
     let secretaryCalls = 0;
     scripts.set('main', (prompt) => {
       mainPrompts.push(userTextOf(prompt));
       return streamOf(textParts('回答'));
     });
-    scripts.set('sub', () => {
+    scripts.set('sub', (prompt) => {
+      secretaryPrompts.push(userTextOf(prompt));
       secretaryCalls++;
       // 1回目は書き込みが失敗するので終了せず、2回目で書き込みと終了を同じ応答で行う
       const path = secretaryCalls === 1 ? '../x.md' : 'notes/概要.md';
@@ -571,34 +574,43 @@ describe('ターン実行', () => {
         ]),
       );
     });
+    // ユーザー → secretary → main → ユーザー。main へはユーザー入力から直接つながず、発言は会話の設定で受け取る
     const graph = graphWithMain();
     workfolderOf(graph).config.entries = [folderEntry('notes', 'notes')];
-    graph.nodes.push(agentOf('secretary', { model: 'sub', workOnly: true }));
-    graph.edges = [flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('main', 'output'), accessEdge('secretary', 'notes', 'write')];
+    graph.nodes.push(agentOf('secretary', { model: 'sub', workOnly: true, ...currentOnly }));
+    graph.edges = [
+      flowEdge('input', 'secretary'),
+      flowEdge('secretary', 'main'),
+      flowEdge('secretary', 'output'),
+      flowEdge('main', 'output'),
+      accessEdge('secretary', 'notes', 'write'),
+    ];
 
     const events = await runTurn(graph, 'こんにちは');
 
     expect(secretaryCalls).toBe(2);
+    expect(secretaryPrompts[0]).toBe('こんにちは');
     expect(mainPrompts).toEqual(['こんにちは']);
     expect(ofType(events, 'call.finish').find((e) => e.nodeId === 'secretary')).toMatchObject({ status: 'done', output: '' });
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '回答' });
     expect(turnFiles(events[0].turnId)?.files).toEqual({ 'notes/概要.md': '更新' });
   });
 
-  it('同じ出所の出力が複数の経路から届いたら1つにまとめ、返答にはユーザー自身の発言を含めない', async () => {
-    const mainPrompts: string[] = [];
-    scripts.set('main', (prompt) => {
-      mainPrompts.push(userTextOf(prompt));
-      return streamOf(textParts('回答'));
+  it('会話を含めないエージェントは、ユーザー入力から直接つながっていても発言を受け取らず、流れてきた出力だけを受け取る', async () => {
+    const reviewerPrompts: string[] = [];
+    scripts.set('main', () => streamOf(textParts('回答')));
+    scripts.set('review', (prompt) => {
+      reviewerPrompts.push(userTextOf(prompt));
+      return streamOf(textParts('確認しました'));
     });
-    scripts.set('sub', () => streamOf(toolCallParts([{ name: 'finish', input: {} }])));
     const graph = graphWithMain();
-    graph.nodes.push(agentOf('secretary', { model: 'sub', workOnly: true }));
-    graph.edges.push(flowEdge('input', 'secretary'), flowEdge('secretary', 'main'), flowEdge('secretary', 'output'));
+    graph.nodes.push(agentOf('reviewer', { model: 'review' }));
+    graph.edges = [flowEdge('input', 'main'), flowEdge('input', 'reviewer'), flowEdge('main', 'reviewer'), flowEdge('reviewer', 'output')];
 
     const events = await runTurn(graph, 'こんにちは');
 
-    expect(mainPrompts).toEqual(['こんにちは']);
-    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '回答' });
+    expect(reviewerPrompts).toEqual(['回答']);
+    expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '確認しました' });
   });
 
   it('フローのノードを流れの順に実行して後段に出力を渡し、条件を満たさないノードは飛ばす', async () => {
@@ -613,10 +625,10 @@ describe('ターン実行', () => {
       subPrompts.push(userTextOf(prompt));
       return streamOf(textParts('集めた情報'));
     });
-    // ユーザー → 判定 →（条件を満たせば）調べもの → メイン → ユーザー。メインにはユーザーの発言も流す
+    // ユーザー → 判定 →（条件を満たせば）調べもの → メイン → ユーザー。メインはユーザーからも動かし、発言は会話の設定で見せる
     const flowGraphOf = (anyOf: string[]) => {
       const graph = graphWithMain();
-      graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]), agentOf('researcher', { model: 'sub' }));
+      graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }], currentOnly), agentOf('researcher', { model: 'sub' }));
       graph.edges.push(flowEdge('input', 'triage'), flowEdge('triage', 'researcher', { condition: { questionKey: 'urgent', anyOf } }), flowEdge('researcher', 'main'));
       return graph;
     };
@@ -641,7 +653,7 @@ describe('ターン実行', () => {
       ['main', null],
     ]);
     expect(ofType(passed, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: '回答' });
-    expect(ofType(skipped, 'log').some((e) => e.message.includes('researcher には何も流れてこなかった'))).toBe(true);
+    expect(ofType(skipped, 'log').some((e) => e.message.includes('researcher を動かす前段が無かった'))).toBe(true);
   });
 
   it('判定の結果で、返答するエージェントを振り分けられる', async () => {
@@ -653,7 +665,7 @@ describe('ターン実行', () => {
       nodes: [
         createNode('userInput', 'input', { x: 0, y: 0 }),
         createNode('userOutput', 'output', { x: 0, y: 0 }),
-        judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }]),
+        judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }], currentOnly),
         agentOf('urgentAgent', { model: 'urgent' }),
         agentOf('calmAgent', { model: 'calm' }),
       ],
@@ -672,6 +684,25 @@ describe('ターン実行', () => {
 
     expect(calledModels).toEqual(['openrouter:urgent']);
     expect(ofType(events, 'turn.finish')[0]).toMatchObject({ status: 'done', reply: 'すぐ対応します' });
+  });
+
+  it('判定にユーザーとの会話を含めると、前のターンの記録を state の先頭に入れる', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'test');
+    scripts.set('main', () => streamOf(textParts('回答')));
+    const graph = graphWithMain();
+    graph.nodes.push(judgeNodeOf([{ key: 'urgent', type: 'noul', instructions: '急ぎか', yes: '', no: '' }], { conversation: 'recent', conversationLength: 1 }));
+    graph.edges.push(flowEdge('input', 'triage'), flowEdge('triage', 'main'));
+    const sessionId = createSession(graph);
+    judgeRequests.length = 0;
+
+    const first = await runTurn(graph, '一つ目', undefined, { sessionId, parentTurnId: null });
+    await runTurn(graph, '二つ目', undefined, { sessionId, parentTurnId: first[0].turnId });
+    vi.unstubAllEnvs();
+
+    expect(judgeRequests).toMatchObject([
+      { state: '一つ目' },
+      { state: '<conversation>\n[user] 一つ目\n[assistant] 回答\n</conversation>\n\n<state>\n二つ目\n</state>' },
+    ]);
   });
 
   it('エッジごとに、エージェントの最後の応答文か全ステップの JSON を渡し、ツールの説明はツールエッジで決まる', async () => {
@@ -716,20 +747,23 @@ describe('ターン実行', () => {
 
 /**
  * ユーザーの発言をモデル main のエージェント main が受けて返すグラフ。空のワークフォルダ work を持つ。
- * main はユーザー入力からの依頼と応答を memory の範囲で覚える
+ * main は、指定がなければユーザーとの会話をすべて見る
  */
-function graphWithMain(memory: CallMemoryMode = 'session'): GraphDefinition {
+function graphWithMain(main: Partial<NodeOf<'agent'>['config']> = {}): GraphDefinition {
   return {
     nodes: [
       createNode('userInput', 'input', { x: 0, y: 0 }),
-      agentOf('main', { model: 'main' }),
+      agentOf('main', { model: 'main', conversation: 'all', ...main }),
       createNode('userOutput', 'output', { x: 0, y: 0 }),
       createNode('workfolder', 'work', { x: 0, y: 0 }),
     ],
-    edges: [flowEdge('input', 'main', { memory }), flowEdge('main', 'output')],
+    edges: [flowEdge('input', 'main'), flowEdge('main', 'output')],
     settings: { maxCallDepth: 5 },
   };
 }
+
+/** ユーザーとの会話のうち、今回の発言だけを見せる設定 */
+const currentOnly = { conversation: 'recent', conversationLength: 0 } as const;
 
 /** main がモデル sub のエージェント researcher を、edge の設定のツールエッジで呼び出すグラフ */
 function graphOf(researcher: Partial<NodeOf<'agent'>['config']>, edge: Partial<EdgeOf<'tool'>> = {}): GraphDefinition {
@@ -746,9 +780,11 @@ function agentOf(id: string, config: Partial<NodeOf<'agent'>['config']>): NodeOf
   return node;
 }
 
-/** 判定ノード triage */
-function judgeNodeOf(questions: JudgeQuestion[]): NodeOf<'judge'> {
-  return { id: 'triage', kind: 'judge', position: { x: 0, y: 0 }, config: { name: 'triage', model: '', questions } };
+/** 判定ノード triage。指定がなければユーザーとの会話を含めない */
+function judgeNodeOf(questions: JudgeQuestion[], config: Partial<NodeOf<'judge'>['config']> = {}): NodeOf<'judge'> {
+  const node = createNode('judge', 'triage', { x: 0, y: 0 });
+  node.config = { ...node.config, name: 'triage', questions, ...config };
+  return node;
 }
 
 function workfolderOf(graph: GraphDefinition): NodeOf<'workfolder'> {

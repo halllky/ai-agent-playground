@@ -3,6 +3,7 @@ import type { ModelMessage } from 'ai';
 import { asc, eq, max } from 'drizzle-orm';
 import { initialFiles, type GraphDefinition, type RunEvent, type RunEventBody, type TurnFiles, type TurnRecord, type WorkfolderFiles } from 'protocol';
 import { db, runEvents, turns, type TurnState } from '../db/index.ts';
+import type { PastTurn } from './conversation.ts';
 import { runFlow, type FlowOutcome } from './flow.ts';
 import { turnHeader, type CallHeader, type RunScope } from './invoke.ts';
 import { FileError, Workfolder } from './nodes/files.ts';
@@ -90,7 +91,8 @@ class Run implements RunScope {
   readonly state: TurnState;
   readonly signal: AbortSignal;
   readonly turnMemory = new Map<string, ModelMessage[]>();
-  readonly conversation: ModelMessage[];
+  readonly pastTurns: PastTurn[];
+  readonly userText: string;
   private readonly controller = new AbortController();
   private readonly listeners = new Set<RunListener>();
   private seq = 0;
@@ -98,7 +100,8 @@ class Run implements RunScope {
   constructor(private readonly turn: typeof turns.$inferSelect) {
     this.graph = turn.graph;
     this.state = turn.state;
-    this.conversation = conversationBefore(turn.parentTurnId);
+    this.pastTurns = turnsBefore(turn.parentTurnId);
+    this.userText = turn.userText;
     this.signal = this.controller.signal;
   }
 
@@ -126,7 +129,7 @@ class Run implements RunScope {
     let outcome: FlowOutcome;
     try {
       this.seedFiles();
-      outcome = await runFlow(this, this.turn.userText);
+      outcome = await runFlow(this);
     } catch (e) {
       outcome = { status: 'error', reply: '', error: e instanceof Error ? e.message : String(e) };
     }
@@ -165,9 +168,9 @@ function changedPaths(before: WorkfolderFiles, after: WorkfolderFiles): string[]
   return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((path) => before[path] !== after[path]).sort();
 }
 
-/** parentTurnId までの分岐をたどった、ユーザーの発言と返答の会話 */
-function conversationBefore(parentTurnId: string | null): ModelMessage[] {
-  const messages: ModelMessage[] = [];
+/** parentTurnId までの分岐をたどった、古い順のターンの発言と返答 */
+function turnsBefore(parentTurnId: string | null): PastTurn[] {
+  const past: PastTurn[] = [];
   for (let id = parentTurnId; id; ) {
     const turn = db
       .select({ parentTurnId: turns.parentTurnId, userText: turns.userText, reply: turns.reply })
@@ -175,8 +178,8 @@ function conversationBefore(parentTurnId: string | null): ModelMessage[] {
       .where(eq(turns.id, id))
       .get();
     if (!turn) break;
-    messages.unshift({ role: 'user', content: turn.userText }, { role: 'assistant', content: turn.reply });
+    past.unshift({ userText: turn.userText, reply: turn.reply });
     id = turn.parentTurnId;
   }
-  return messages;
+  return past;
 }

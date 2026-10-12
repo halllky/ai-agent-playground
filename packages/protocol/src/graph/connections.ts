@@ -1,7 +1,7 @@
 import {
   isInvocable,
-  type CallMemoryMode,
   type EdgeKind,
+  type EdgeOf,
   type GraphDefinition,
   type GraphEdge,
   type GraphNode,
@@ -12,15 +12,19 @@ import {
 /**
  * ノード種別ごとの、グラフ上での役割。接続できる組み合わせはすべてここから決まる。
  * usesTools はツールとワークフォルダを使う側、isTool はツールとして使われる側、isWorkfolder はワークフォルダ、
- * receivesFlow / sendsFlow はフローを受け取れるか / 送り出せるか
+ * receivesFlow / sendsFlow はフローを受け取れるか / 送り出せるか、seesConversation はユーザーとの会話を見られるか。
+ * ユーザー入力からのフローは発言を流さないので、会話を見られるノードにだけつなげる
  */
-export const nodeRoles: Record<NodeKind, { usesTools: boolean; isTool: boolean; isWorkfolder: boolean; receivesFlow: boolean; sendsFlow: boolean }> = {
-  userInput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: false, sendsFlow: true },
-  userOutput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: true, sendsFlow: false },
-  agent: { usesTools: true, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
-  workfolder: { usesTools: false, isTool: false, isWorkfolder: true, receivesFlow: false, sendsFlow: false },
-  judge: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
-  webSearch: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true },
+export const nodeRoles: Record<
+  NodeKind,
+  { usesTools: boolean; isTool: boolean; isWorkfolder: boolean; receivesFlow: boolean; sendsFlow: boolean; seesConversation: boolean }
+> = {
+  userInput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: false, sendsFlow: true, seesConversation: false },
+  userOutput: { usesTools: false, isTool: false, isWorkfolder: false, receivesFlow: true, sendsFlow: false, seesConversation: false },
+  agent: { usesTools: true, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true, seesConversation: true },
+  workfolder: { usesTools: false, isTool: false, isWorkfolder: true, receivesFlow: false, sendsFlow: false, seesConversation: false },
+  judge: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true, seesConversation: true },
+  webSearch: { usesTools: false, isTool: true, isWorkfolder: false, receivesFlow: true, sendsFlow: true, seesConversation: false },
 };
 
 /** source から target へ kind のエッジを張れるか */
@@ -32,8 +36,19 @@ export function canConnect(source: GraphNode, target: GraphNode, kind: EdgeKind)
     case 'access':
       return nodeRoles[source.kind].usesTools && nodeRoles[target.kind].isWorkfolder;
     case 'flow':
+      if (source.kind === 'userInput' && !nodeRoles[target.kind].seesConversation) return false;
       return nodeRoles[source.kind].sendsFlow && nodeRoles[target.kind].receivesFlow;
   }
+}
+
+/** 両端のノードがあり、つなげられる組み合わせのフローエッジ。それ以外のフローエッジは、流れとして扱わない */
+export function connectedFlows(graph: GraphDefinition): EdgeOf<'flow'>[] {
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  return graph.edges.filter((e): e is EdgeOf<'flow'> => {
+    const source = nodeById.get(e.source);
+    const target = nodeById.get(e.target);
+    return e.kind === 'flow' && !!source && !!target && canConnect(source, target, 'flow');
+  });
 }
 
 /**
@@ -44,11 +59,7 @@ export function flowOrder(graph: GraphDefinition): InvocableNode[] | null {
   const input = graph.nodes.find((n) => n.kind === 'userInput');
   if (!input) return [];
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
-  const flows = graph.edges.filter((e) => {
-    const source = nodeById.get(e.source);
-    const target = nodeById.get(e.target);
-    return e.kind === 'flow' && source && target && canConnect(source, target, 'flow') && isInvocable(target);
-  });
+  const flows = connectedFlows(graph).filter((e) => isInvocable(nodeById.get(e.target)!));
 
   const reachable = new Set<string>();
   const visit = (id: string) => {
@@ -76,14 +87,6 @@ export function flowOrder(graph: GraphDefinition): InvocableNode[] | null {
     ready = next;
   }
   return ordered.length === reachable.size ? ordered : null;
-}
-
-/**
- * フローから nodeId のノードを呼ぶときの、依頼と応答の記憶。入ってくるフローエッジのどれかが session なら session。
- * フローではノードは1ターンに1回しか呼ばれないので、turn は記憶なしと同じに扱う
- */
-export function flowMemoryOf(graph: GraphDefinition, nodeId: string): Exclude<CallMemoryMode, 'turn'> {
-  return graph.edges.some((e) => e.kind === 'flow' && e.target === nodeId && e.memory === 'session') ? 'session' : 'none';
 }
 
 /** nodeIds のノードと、それらにつながるエッジを取り除いたグラフ */

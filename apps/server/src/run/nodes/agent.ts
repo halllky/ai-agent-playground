@@ -23,6 +23,7 @@ import {
   type WorkfolderScope,
 } from 'protocol';
 import { languageModel, stepCost } from '../../llm/index.ts';
+import { conversationOf } from '../conversation.ts';
 import type { RunScope, ToolCall } from '../invoke.ts';
 import { Workfolder } from './files.ts';
 
@@ -37,12 +38,14 @@ export type AgentOutcome = {
   error: string | null;
 };
 
-/** 呼び出し元とのこれまでの依頼と応答の記憶。key ごとに分けて持つ */
+/** ツールエッジの呼び出し元とのこれまでの依頼と応答の記憶。key（ツールエッジの id）ごとに分けて持つ */
 export type CallMemory = { mode: CallMemoryMode; key: string };
 
 /**
- * エージェントに task を依頼する。LLM には、memory に残っている呼び出し元とのこれまでの依頼と応答に続けて、
- * ユーザーとの会話・プロンプトに含めるファイル・依頼を並べた今回のメッセージを渡す。
+ * エージェントに task を依頼する。LLM には、これまでのやりとりに続けて、
+ * ユーザーとの会話の記録・プロンプトに含めるファイル・依頼を並べた今回のメッセージを渡す。
+ * フローから呼ぶ（memory が null）なら、これまでのやりとりは前のターンまでのユーザーとの会話を対話にしたもので、会話の記録は入れない。
+ * ツールとして呼ぶなら、これまでのやりとりは memory に残っている呼び出し元との依頼と応答で、会話の記録には今回の発言まで入れる。
  * memory を持つなら、今回の依頼とそれへの応答を次回のために残す（会話とファイルは毎回その時点の中身で作り直す）。
  * LLM をツールコールのループが終わるまで進め、ステップ・テキスト・ツールのイベントを emit に流す。
  * LLM 呼び出しの失敗や Abort は例外にせず、結果の status として返す。
@@ -51,14 +54,16 @@ export async function invokeAgent(
   scope: RunScope,
   node: NodeOf<'agent'>,
   task: string,
-  memory: CallMemory,
+  memory: CallMemory | null,
   tools: ToolSet,
   emit: (body: RunEventBody) => void,
 ): Promise<AgentOutcome> {
-  const pastCalls = pastCallsOf(scope, memory);
-  const message: ModelMessage = { role: 'user', content: currentMessageOf(scope, node, task) };
-  const loop = await runLoop(node, [...pastCalls, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
-  storeCalls(scope, memory, [...pastCalls, { role: 'user', content: task }, ...loop.responseMessages]);
+  const conversation = conversationOf(scope, node);
+  const past = memory ? pastCallsOf(scope, memory) : conversation.dialogue();
+  const transcript = memory ? conversation.transcript(true) : null;
+  const message: ModelMessage = { role: 'user', content: currentMessageOf(scope, node, task, transcript) };
+  const loop = await runLoop(node, [...past, message], { ...tools, ...finishToolOf(node) }, scope.signal, emit);
+  if (memory) storeCalls(scope, memory, [...past, { role: 'user', content: task }, ...loop.responseMessages]);
   if (loop.error) return { status: loop.status, output: loop.error, stepsOutput: loop.error, error: loop.error };
   return { status: loop.status, output: loop.output, stepsOutput: loop.stepsOutput, error: null };
 }
@@ -97,31 +102,18 @@ function storeCalls(scope: RunScope, memory: CallMemory, messages: ModelMessage[
 }
 
 /**
- * 今回のメッセージの本文。ユーザーとの会話・プロンプトに含めるファイル・依頼の順にタグで囲んで並べる。
- * 会話もファイルも無ければ、依頼をそのまま本文にする
+ * 今回のメッセージの本文。ユーザーとの会話の記録（transcript）・プロンプトに含めるファイル・依頼の順にタグで囲んで並べる。
+ * 会話の記録もファイルも無ければ、依頼をそのまま本文にする
  */
-function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string): string {
-  const conversation = pastConversationOf(scope.conversation, node.config);
+function currentMessageOf(scope: RunScope, node: NodeOf<'agent'>, task: string, transcript: string | null): string {
   const workfolder = new Workfolder(scope.state.files, () => {});
   const sections = [
-    ...(conversation.length > 0 ? [`<conversation>\n${conversation.map(transcriptLineOf).join('\n')}\n</conversation>`] : []),
+    ...(transcript ? [transcript] : []),
     ...attachedPathsOf(agentAttachments(scope.graph, node), workfolder).map((path) =>
       workfolder.has(path) ? `<file path="${path}">\n${workfolder.read(path)}\n</file>` : `<file path="${path}" missing="true" />`,
     ),
   ];
   return sections.length > 0 ? [...sections, `<task>\n${task}\n</task>`].join('\n\n') : task;
-}
-
-/** 前のターンまでのユーザーとの会話のうち、今回のメッセージに入れる分 */
-function pastConversationOf(conversation: ModelMessage[], config: NodeOf<'agent'>['config']): ModelMessage[] {
-  switch (config.conversation) {
-    case 'recent':
-      return conversation.slice(-config.conversationLength);
-    case 'all':
-      return conversation;
-    case 'none':
-      return [];
-  }
 }
 
 /**
@@ -131,11 +123,6 @@ function pastConversationOf(conversation: ModelMessage[], config: NodeOf<'agent'
 function attachedPathsOf(scopes: WorkfolderScope[], workfolder: Workfolder): string[] {
   const paths = scopes.flatMap((scope) => (scope.isFolder ? workfolder.list().filter((path) => isInScope(path, scope)) : [scope.path]));
   return [...new Set(paths)];
-}
-
-/** ユーザーとの会話の発言1つ。発言と返答はどちらも文字列で持っている */
-function transcriptLineOf(message: ModelMessage): string {
-  return `[${message.role}] ${typeof message.content === 'string' ? message.content : ''}`;
 }
 
 /**

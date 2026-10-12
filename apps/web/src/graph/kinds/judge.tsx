@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { judgeQuestionTypeLabels, judgeQuestionTypes, type JudgeQuestion, type NodeOf } from 'protocol';
 import { Hint, SectionHeading, TextField } from '../fields.tsx';
+import { ConversationField } from './conversation.tsx';
 import type { NodeKindView } from './index.ts';
 
 /** 判定ノードの画面上の振る舞い */
@@ -13,6 +14,7 @@ export const judgeView: NodeKindView<'judge'> = {
       <>
         <TextField label="名前（ツール名）" value={node.config.name} onChange={(name) => set({ name })} />
         <TextField label="モデル（空なら jev-latest）" value={node.config.model} onChange={(model) => set({ model })} />
+        <ConversationField config={node.config} onChange={set} />
         <SectionHeading>質問</SectionHeading>
         <Hint>入力された内容について、ここで決めた質問への回答を確率付きで返します。</Hint>
         <JudgeQuestionsField questions={node.config.questions} onChange={(questions) => set({ questions })} />

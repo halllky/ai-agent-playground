@@ -1,16 +1,18 @@
 import { z } from 'zod';
 import { modelProviders } from '../model.ts';
 
-/** エージェントに、前のターンまでのユーザーとの会話をどれだけ渡すか。recent なら直近 conversationLength 発言 */
-export const conversationModes = ['none', 'recent', 'all'] as const;
 /**
- * エージェントに、エッジの呼び出し元からのこれまでの依頼と応答（ツールコールを含む）を、このターン / この会話の分だけ渡すか。
- * 記憶はツールエッジごと、フローからの呼び出しはノードごとに分かれる
+ * ノードに、ユーザーとの会話をどれだけ見せるか。none ならユーザーの言葉を一切見せない。
+ * recent / all なら今回の発言を必ず含め、前のターンは recent なら直近 conversationLength 往復、all ならすべてを含める
  */
+export const conversationModes = ['none', 'recent', 'all'] as const;
+/** ノードに、ユーザーとの会話をどれだけ見せるか */
+export type ConversationMode = (typeof conversationModes)[number];
+/** エージェントに、ツールエッジの呼び出し元からのこれまでの依頼と応答（ツールコールを含む）を、このターン / この会話の分だけ渡すか。記憶はツールエッジごとに分かれる */
 export const callMemoryModes = ['none', 'turn', 'session'] as const;
-/** エッジの呼び出し元からのこれまでの依頼と応答を、どの範囲だけ渡すか */
+/** ツールエッジの呼び出し元からのこれまでの依頼と応答を、どの範囲だけ渡すか */
 export type CallMemoryMode = (typeof callMemoryModes)[number];
-/** エッジの先へエージェントの出力として何を渡すか。エージェントが workOnly なら使わない */
+/** エッジの先へエージェントの出力として何を渡すか。エージェントが workOnly なら使わない（何も渡さない） */
 export const returnModes = ['finalText', 'allSteps'] as const;
 /** エッジの先へエージェントの出力として何を渡すか */
 export type ReturnMode = (typeof returnModes)[number];
@@ -24,6 +26,13 @@ export type FilePermission = Exclude<AccessPermission, 'none'>;
 export const searchDepths = ['basic', 'advanced'] as const;
 
 const positionSchema = z.object({ x: z.number(), y: z.number() });
+
+/** ユーザーとの会話を見るノード（エージェント・判定）の、会話の設定 */
+const conversationConfig = {
+  conversation: z.enum(conversationModes),
+  /** conversation が recent のときに入れる、今回の発言より前の往復の数 */
+  conversationLength: z.number().int().nonnegative(),
+};
 
 /** 判定ノードの質問の種類。noul は yes/no、choice は選択肢から1つ、score は段階評価 */
 export const judgeQuestionTypes = ['noul', 'choice', 'score'] as const;
@@ -87,7 +96,10 @@ export type WorkfolderEntry = z.infer<typeof workfolderEntrySchema>;
  * 呼び出せるノードの config.name は、呼び出し元から見えるツール名になる
  */
 export const graphNodeSchema = z.discriminatedUnion('kind', [
-  /** ユーザー入力。ターンの発言はここから流れ出す。グラフに1つだけ置く */
+  /**
+   * ユーザー入力。ここからフローでつないだノードが、ターンの最初に動く。グラフに1つだけ置く。
+   * 発言そのものはフローに流れず、各ノードがユーザーとの会話の設定で見る
+   */
   z.object({
     id: z.string(),
     kind: z.literal('userInput'),
@@ -100,9 +112,11 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
     position: positionSchema,
   }),
   /**
-   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・呼び出し元とのこれまでの依頼と応答（エッジの memory）・今回のメッセージの順に渡す。
-   * 今回のメッセージは、ユーザーとの会話（conversation）・プロンプトに含めるワークフォルダのファイル（アクセスエッジの attach）・依頼を並べたもの。
-   * 依頼は、フローから呼ばれたときは流れてきた入力、ツールとして呼ばれたときは呼び出し元が書いた引数
+   * LLM を呼び出して動くエージェント。LLM には、システムプロンプト・これまでのやりとり・今回のメッセージの順に渡す。
+   * これまでのやりとりは、フローから呼ばれたときは前のターンまでのユーザーとの会話（conversation）を対話として、
+   * ツールとして呼ばれたときは呼び出し元とのこれまでの依頼と応答（ツールエッジの memory）。
+   * 今回のメッセージは、ユーザーとの会話の記録（ツールとして呼ばれたときだけ）・プロンプトに含めるワークフォルダのファイル（アクセスエッジの attach）・依頼を並べたもの。
+   * 依頼は、フローから呼ばれたときは今回の発言（conversation が none でなければ）と流れてきた出力、ツールとして呼ばれたときは呼び出し元が書いた引数
    */
   z.object({
     id: z.string(),
@@ -114,12 +128,10 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
       model: z.string(),
       systemPrompt: z.string(),
       maxSteps: z.number().int().positive(),
-      conversation: z.enum(conversationModes),
-      /** conversation が recent のときに入れる、直近の発言の数 */
-      conversationLength: z.number().int().positive(),
+      ...conversationConfig,
       /**
        * 作業だけして終わり、何も返さないか。終了用のツールで応答を待たずに終われる。
-       * ツールとしては完了したことだけを返し、フローでは受け取った入力をそのまま後段へ流す（エッジの returns は使わない）
+       * ツールとしては完了したことだけを返し、フローでは後段に何も流さない（エッジの returns は使わない）
        */
       workOnly: z.boolean(),
     }),
@@ -142,7 +154,8 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
   }),
   /**
    * Jev（TypeSafe AI）による判定。入力された state について、
-   * ノードに固定で定義した質問への回答を確率・confidence 付きで返す。テキスト生成やツールコールはしない
+   * ノードに固定で定義した質問への回答を確率・confidence 付きで返す。テキスト生成やツールコールはしない。
+   * state は、ユーザーとの会話の記録（conversation）と、エージェントと同じ形の依頼を並べたもの
    */
   z.object({
     id: z.string(),
@@ -153,6 +166,7 @@ export const graphNodeSchema = z.discriminatedUnion('kind', [
       /** 空なら SDK の既定のモデル */
       model: z.string(),
       questions: z.array(judgeQuestionSchema),
+      ...conversationConfig,
     }),
   }),
   /** Tavily によるWeb検索 */
@@ -208,18 +222,17 @@ export const graphEdgeSchema = z.discriminatedUnion('kind', [
     attach: z.boolean(),
   }),
   /**
-   * 送り元の出力を、送り先の入力として流す。returns は送り元がエージェントのとき、memory は送り先がエージェントのときだけ使う。
-   * フローではエージェントは1ターンに1回しか呼ばれないので memory の turn は使わず、送り先へ入るフローエッジの memory はそろえる
+   * 送り元が終わったら送り先を動かし、送り元の出力を送り先の入力として流す。returns は送り元がエージェントのときだけ使う。
+   * 送り元がユーザー入力なら、ターンの最初に送り先を動かすだけで、何も流さない
    */
   z.object({
     id: z.string(),
     kind: z.literal('flow'),
     source: z.string(),
     target: z.string(),
-    /** 送り元が判定ノードのとき、回答がこれを満たす場合だけ流す。null なら常に流す */
+    /** 送り元が判定ノードのとき、回答がこれを満たす場合だけ送り先を動かす。null なら常に動かす */
     condition: flowConditionSchema.nullable(),
     returns: z.enum(returnModes),
-    memory: z.enum(callMemoryModes),
   }),
 ]);
 /** グラフのエッジ */
