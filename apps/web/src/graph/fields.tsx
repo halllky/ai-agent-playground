@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import type { ModelInfo, ModelProvider } from 'protocol';
+import { defaultModelOf, modelProviderLabels, modelProviders, type ModelInfo, type ModelProvider } from 'protocol';
 import { useStore } from '../store.ts';
 
 /** インスペクタ内の小見出し */
@@ -17,7 +17,12 @@ export function TextField(props: { label: string; value: string; onChange: (valu
   return (
     <Field label={props.label}>
       {props.multiline ? (
-        <textarea rows={6} value={props.value} onChange={(e) => props.onChange(e.target.value)} />
+        <textarea
+          rows={2}
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          className="w-full field-sizing-content"
+        />
       ) : (
         <input value={props.value} onChange={(e) => props.onChange(e.target.value)} />
       )}
@@ -94,33 +99,67 @@ export function ChecklistField<T extends string>(props: {
   );
 }
 
-/** provider のモデル一覧から選ぶ。一覧にない ID も入力できる */
-export function ModelField(props: { provider: ModelProvider; value: string; onChange: (value: string) => void }) {
+/**
+ * プロバイダと、そのモデル一覧からモデルを選ぶ。一覧にない ID も入力できる。
+ * モデル ID はプロバイダごとに別物なので、プロバイダを切り替えたら既定のモデルに戻す
+ */
+export function ProviderAndModelField(props: {
+  provider: ModelProvider;
+  model: string;
+  onChange: (value: { provider: ModelProvider; model: string }) => void;
+}) {
   const listId = useId();
   const models = useStore((s) => s.models[props.provider]);
   const error = useStore((s) => s.modelErrors[props.provider]);
-  const model = models?.find((m) => m.id === props.value);
+  const model = models?.find((m) => m.id === props.model);
   return (
     <Field label="モデル">
-      <input list={listId} value={props.value} onChange={(e) => props.onChange(e.target.value)} />
-      <datalist id={listId}>
-        {models?.map((m) => (
-          <option key={m.id} value={m.id}>
-            {describeModel(m)}
-          </option>
-        ))}
-      </datalist>
-      {model && <span className={fieldNote}>{describeModel(model)}</span>}
-      {error && <span className={fieldNote}>モデル一覧を取得できません: {error}</span>}
+      <div className="flex items-start min-w-0 flex-1 gap-0.5">
+        <select
+          value={props.provider}
+          onChange={(e) => {
+            const provider = e.target.value as ModelProvider;
+            props.onChange({ provider, model: defaultModelOf[provider] });
+          }}
+        >
+          {modelProviders.map((p) => (
+            <option key={p} value={p}>
+              {modelProviderLabels[p]}
+            </option>
+          ))}
+        </select>
+        <div className="flex-1 flex flex-col items-start">
+          <input
+            list={listId}
+            value={props.model}
+            onChange={(e) => props.onChange({ provider: props.provider, model: e.target.value })}
+            className="min-w-0 self-stretch"
+          />
+          <datalist id={listId}>
+            {models?.map((m) => (
+              <option key={m.id} value={m.id}>
+                {describeModel(m)}
+              </option>
+            ))}
+          </datalist>
+          {model && <span className={fieldNote}>{describeModel(model)}</span>}
+          {error && <span className={fieldNote}>モデル一覧を取得できません: {error}</span>}
+        </div>
+      </div>
     </Field>
   );
 }
 
 /** 入力欄と、その見出し。見出しが空なら出さない（直前の小見出しが見出しを兼ねるとき） */
-function Field({ label, children }: { label: string; children: ReactNode }) {
+export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="mb-2 flex flex-col gap-0.5">
-      {label && <span className={fieldNote}>{label}</span>}
+    <label className="mb-2 flex items-start gap-0.5">
+      <div className="basis-32 flex-none flex justify-end items-center py-1">
+        <span className="text-xs text-muted select-none">
+          {label}
+        </span>
+        &nbsp;
+      </div>
       {children}
     </label>
   );

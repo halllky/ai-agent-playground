@@ -1,5 +1,5 @@
-import { defaultModelOf, modelProviderLabels, modelProviders, type NodeOf } from 'protocol';
-import { ModelField, NumberField, SelectField, TextField } from '../fields.tsx';
+import { modelProviderLabels, type NodeOf } from 'protocol';
+import { NumberField, ProviderAndModelField, TextField } from '../fields.tsx';
 import { ConversationField } from './conversation.tsx';
 import type { NodeKindView } from './index.ts';
 
@@ -18,14 +18,7 @@ export const agentView: NodeKindView<'agent'> = {
     return (
       <>
         <TextField label="名前（ツール名）" value={config.name} onChange={(name) => set({ name })} />
-        <SelectField
-          label="プロバイダ"
-          value={config.provider}
-          options={providerOptions}
-          // モデル ID はプロバイダごとに別物なので、切り替えたら既定のモデルに戻す
-          onChange={(provider) => set({ provider, model: defaultModelOf[provider] })}
-        />
-        <ModelField provider={config.provider} value={config.model} onChange={(model) => set({ model })} />
+        <ProviderAndModelField provider={config.provider} model={config.model} onChange={set} />
         <NumberField label="最大ステップ数" min={1} value={config.maxSteps} onChange={(maxSteps) => set({ maxSteps })} />
         <TextField label="システムプロンプト" multiline value={config.systemPrompt} onChange={(systemPrompt) => set({ systemPrompt })} />
         <ConversationField config={config} onChange={set} />
@@ -33,5 +26,3 @@ export const agentView: NodeKindView<'agent'> = {
     );
   },
 };
-
-const providerOptions = modelProviders.map((value) => ({ value, label: modelProviderLabels[value] }));

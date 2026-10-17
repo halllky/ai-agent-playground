@@ -1,5 +1,5 @@
 import { conversationModes, type ConversationMode } from 'protocol';
-import { Hint } from '../fields.tsx';
+import { Field, Hint } from '../fields.tsx';
 
 /** 会話を見るノード（エージェント・判定）の、会話の設定 */
 type ConversationConfig = { conversation: ConversationMode; conversationLength: number };
@@ -8,9 +8,8 @@ type ConversationConfig = { conversation: ConversationMode; conversationLength: 
 export function ConversationField(props: { config: ConversationConfig; onChange: (changed: Partial<ConversationConfig>) => void }) {
   const { config, onChange } = props;
   return (
-    <>
-      <label className="mb-2 flex flex-col gap-0.5">
-        <span className="text-xs text-muted">ユーザーとの会話</span>
+    <Field label="ユーザーとの会話">
+      <div className="flex flex-col items-start">
         <span className="flex items-center gap-1">
           <select
             className="min-w-0 flex-1"
@@ -39,12 +38,12 @@ export function ConversationField(props: { config: ConversationConfig; onChange:
             </>
           )}
         </span>
-      </label>
-      <Hint>
-        今回の発言と、その前のやりとりを見せます。含めないなら、ユーザーの言葉は見えず、前段から流れてきたものだけを受け取ります。
-        フローから呼ばれたエージェントには前のやりとりを対話として、それ以外には会話の記録として渡します。
-      </Hint>
-    </>
+        <Hint>
+          今回の発言と、その前のやりとりを見せます。含めないなら、ユーザーの言葉は見えず、前段から流れてきたものだけを受け取ります。
+          フローから呼ばれたエージェントには前のやりとりを対話として、それ以外には会話の記録として渡します。
+        </Hint>
+      </div>
+    </Field>
   );
 }
 
