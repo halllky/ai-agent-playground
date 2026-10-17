@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import { LockClosedIcon, LockOpenIcon } from '@heroicons/react/16/solid';
 import {
   Background,
@@ -42,7 +42,7 @@ export function Canvas(props: {
   onSelect: Dispatch<SetStateAction<Selection>>;
 }) {
   const { definition, warningsOf, readOnly, selection, onSelect } = props;
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
   // 制御モードでは React Flow が測った寸法を渡し返さないとノードが表示されないため、保存対象ではないがここで保持する
   const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
   const [locked, setLocked] = useState(false);
@@ -82,6 +82,12 @@ export function Canvas(props: {
     onSelect({ nodeId: id });
   };
 
+  useEffect(() => {
+    window.setTimeout(() => {
+      fitView();
+    }, 10);
+  }, []);
+
   return (
     <div className="relative h-full">
       {!readOnly && (
@@ -99,7 +105,6 @@ export function Canvas(props: {
         edges={edges}
         nodeTypes={nodeTypes}
         colorMode="system"
-        fitView
         nodesDraggable={editable}
         nodesConnectable={editable}
         deleteKeyCode={editable ? deleteKeys : null}
@@ -203,9 +208,8 @@ function GraphNodeView({ data, selected }: NodeProps<FlowNode>) {
   const roles = nodeRoles[data.node.kind];
   return (
     <div
-      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${view.fixed ? 'border-2' : 'border'} ${
-        selected ? 'border-accent ring-1 ring-accent' : ''
-      }`}
+      className={`min-w-[150px] rounded-md bg-surface px-2.5 py-2 ${view.fixed ? 'border-2' : 'border'} ${selected ? 'border-accent ring-1 ring-accent' : ''
+        }`}
     >
       {roles.isTool && <Handle id="tool" type="target" position={Position.Top} />}
       {roles.receivesFlow && <Handle id="flow" type="target" position={Position.Left} className={flowHandle} />}

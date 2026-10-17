@@ -28,8 +28,8 @@ export function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       <SessionBar />
-      <Allotment defaultSizes={[70, 30]}>
-        <Allotment.Pane>
+      <Allotment proportionalLayout={false}>
+        <Allotment.Pane priority={LayoutPriority.High}>
           <div className="flex h-full flex-col">
             <BranchTotals path={path} />
             <div className="flex-1 overflow-y-auto p-3">
@@ -41,7 +41,7 @@ export function ChatPanel() {
             <Composer running={runningTurn} />
           </div>
         </Allotment.Pane>
-        <Allotment.Pane snap priority={LayoutPriority.Low}>
+        <Allotment.Pane preferredSize={320}>
           <FilePanel />
         </Allotment.Pane>
       </Allotment>

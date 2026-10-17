@@ -14,10 +14,10 @@ export function App() {
       <ErrorBar />
       <div className="min-h-0 flex-1">
         <Allotment proportionalLayout={false}>
-          <Allotment.Pane minSize={200}>
+          <Allotment.Pane preferredSize={640}>
             <GraphPanel />
           </Allotment.Pane>
-          <Allotment.Pane minSize={200} priority={LayoutPriority.Low}>
+          <Allotment.Pane priority={LayoutPriority.High}>
             <ChatPanel />
           </Allotment.Pane>
         </Allotment>

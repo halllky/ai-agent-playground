@@ -32,6 +32,16 @@
   --color-highlight: #e8f0fe;
 }
 
+/*
+ * Allotment は外側の分割が配置を終えるまでペインの幅を決めず、その間は中身なりの幅になる。
+ * 入れ子の Allotment がその仮の幅で初期化されて preferredSize が切り詰められないよう、配置前のペインは隠して幅 0 にする。
+ * Allotment バージョン 1.20.5 における対応。
+ * なお split-view-view-visible は Allotment の内部で使われているクラス名で、公開された API ではない。
+ */
+.split-view-view:not(.split-view-view-visible) {
+  display: none;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --color-surface: #17191d;
